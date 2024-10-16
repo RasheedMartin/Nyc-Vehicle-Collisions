@@ -61,6 +61,12 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+# idea projects
+.idea/
+.gitignore
+.xml
+.iml
+
 # Flask stuff:
 instance/
 .webassets-cache
@@ -153,6 +159,11 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+
+# DS Store
+data_files/
+/.DS_Store
+
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
