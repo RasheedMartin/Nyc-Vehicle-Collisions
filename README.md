@@ -103,7 +103,7 @@ The `visualizations/` folder contains key output files:
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/RasheedMartin/nyc-vehicle-collisions.git
+git clone https://github.com/RasheedMartin/Nyc-Vehicle-Collisions.git
 cd nyc-vehicle-collisions
 ```
 
