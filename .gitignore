@@ -162,7 +162,7 @@ cython_debug/
 
 # DS Store
 data_files/
-/.DS_Store
+.DS_Store
 
 
 # PyCharm
