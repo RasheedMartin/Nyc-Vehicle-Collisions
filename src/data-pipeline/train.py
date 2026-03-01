@@ -201,7 +201,6 @@ def run_train(
 
     # ── SMOTE on training set only ────────────────────────────────────────────
     X_train_res, y_train_res = apply_smote(X_train, y_train, severity_order)
-    del X_train, y_train
 
     # ── Cross-validation ──────────────────────────────────────────────────────
     log.info(f"Running {cv_folds}-fold stratified cross-validation …")
