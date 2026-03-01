@@ -151,6 +151,9 @@ pg = st.navigation(
             st.Page(str(pages_dir / "5_severity_predictor.py"),
                     title="Severity Predictor",
                     icon="🤖"),
+            st.Page(str(pages_dir / "6_pipeline.py"),
+                    title="Data Pipeline",
+                    icon="⚙️"),
         ],
     }
 )
