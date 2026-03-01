@@ -1,155 +1,180 @@
-# NYC Motor Vehicle Collision Analysis
+# Queens Vehicle Collision Intelligence
 
-This repository contains an analysis of motor vehicle collisions in New York City, using a dataset of recorded accidents. The goal of this project is to predict accident severity based on features such as borough, contributing factors, and time-related attributes, and to provide visualizations of the accident data in the form of heatmaps.
+An end-to-end data science project analyzing motor vehicle collisions in Queens, NY — from raw NYC Open Data through a weekly-retrained XGBoost model to a live Streamlit dashboard.
+
+**Live app →** [deployed on Railway](https://nyc-vehicle-collisions-production.up.railway.app/)
+
+---
+
+## What It Does
+
+Given a street and time in Queens — say Jamaica Ave on a winter weekday at noon — how severe are crashes likely to be? The dashboard answers that question across five pages:
+
+| Page                     | Description                                                                     |
+| ------------------------ | ------------------------------------------------------------------------------- |
+| **Overview**             | Crash counts, severity breakdown, KPIs by year                                  |
+| **Hotspot Map**          | Street-level density heatmap of Queens collisions                               |
+| **Contributing Factors** | Top crash causes ranked by severity class                                       |
+| **Trends**               | Year-over-year and seasonal patterns (with Vision Zero context)                 |
+| **Severity Predictor**   | XGBoost model: select a street + time → get a severity probability distribution |
+
+---
+
+## Architecture
+
+```
+NYC Open Data (Socrata)
+        │
+        ▼
+   fetch.py  ──── incremental pull, weekly
+        │
+   clean.py  ──── merge crashes + persons, filter Queens,
+        │          derive severity label + time features
+        │
+ features.py ──── encode on_street_name (top-100 OHE),
+        │          time_of_day, season (ordinal), weekend/
+        │          rush-hour/month/day_of_week (numeric)
+        │          fit ColumnTransformer → preprocessor.joblib
+        │
+  train.py   ──── XGBoost multiclass, SMOTE on train split only,
+        │          5-fold stratified CV → severity_model.joblib
+        │
+Cloudflare R2 ── artifact store (parquet, joblib, json)
+        │
+GitHub Actions ── workflow_dispatch → railway redeploy
+        │
+   Railway    ──── Streamlit app pulls artifacts from R2 on cold start
+```
+
+**Orchestration**: Apache Airflow (Docker) runs the full pipeline every Monday at 6am.
+**Stack**: Python · Polars · XGBoost · scikit-learn · SMOTE · Streamlit · Plotly · boto3
+
+---
 
 ## Repository Structure
 
-```markdown
-├── data_files/
-│   ├── raw_data/
-│   │   ├── Motor_Vehicle_Collisions_-_Crashes.csv   # Raw dataset of vehicle collision incidents in NYC
-│   │   └── Motor_Vehicle_Collisions_-_Person.csv    # Raw dataset of person details involved in collisions
-│   ├── location_data.csv                            # Dataset containing location information for modeling
-│   ├── location_model_data.csv                      # Processed dataset for location-based modeling
-│   ├── merged_data.csv                              # Merged dataset of vehicle collisions and person details
-│   └── person_detail.csv                            # Dataset with person-specific details for analysis
-│   └── Borough_Boundaries/
-│       ├── geo_borough.cpg
-│       ├── geo_borough.dbf
-│       ├── geo_borough.prj
-│       ├── geo_borough.shp
-│       └── geo_borough.shx
-├── src/
-│   ├── 01_data_cleaning.ipynb                       # Notebook for data cleaning and preprocessing
-│   ├── 02_accident_severity_model.ipynb             # Notebook for RandomForestClassifier model predicting accident severity
-│   └── 03_heatmap_visualization.ipynb               # Notebook for creating heatmaps using Folium
-├── visualizations/
-│   ├── ny_accidents_fatal_heatmap.html              # HTML file containing a heatmap of fatal accidents
-│   ├── severity_random_forest_Confusion_Matrix.png  # Confusion matrix for RandomForestClassifier model
-│   ├── severity_random_forest_smote_Confusion_Matrix.png # Confusion matrix for RandomForest with SMOTE
-│   └── severity_regression_Confusion_Matrix.png     # Confusion matrix for severity regression model
-└── README.md                                        # Project documentation
+```
+├── app/
+│   ├── main.py                        # Streamlit entry point, R2 artifact loader
+│   ├── theme.py                       # Color palette and chart defaults
+│   └── pages/
+│       ├── 1_overview.py
+│       ├── 2_hotspot_map.py
+│       ├── 3_contributing_factors.py
+│       ├── 4_trends.py
+│       └── 5_severity_predictor.py
+│
+├── src/data-pipeline/
+│   ├── fetch.py                       # Socrata API pull (full or incremental)
+│   ├── clean.py                       # Merge, filter, feature engineering
+│   ├── features.py                    # Encoding, preprocessor fitting
+│   └── train.py                       # XGBoost training + evaluation
+│
+├── data/                              # Git-ignored; populated by pipeline
+│   ├── raw/                           # Socrata CSVs
+│   └── processed/QUEENS/             # collisions_queens.parquet, preprocessor.joblib,
+│                                      # feature_meta.json
+├── models/QUEENS/                     # severity_model.joblib, train_meta.json
+│
+├── .github/workflows/
+│   └── redeploy-railway.yml           # Triggered by Airflow after R2 upload
+│
+└── requirements.txt
 ```
 
-## Notebooks Overview
-
-### 1. Data Cleaning (01_data_cleaning.ipynb)
-This notebook is responsible for loading the raw dataset and preparing it for modeling and visualization. The steps include:
-
-- Handling missing values and removing irrelevant columns.
-- Creating new features, such as:
-  - ACCIDENT_SEVERITY: A new column that categorizes accidents into "Fatal," "Major Injury," "Minor Injury," and "No Injury" based on the number of people injured or killed.
-  - Season: Categorizing accidents based on the season they occurred.
-  - Year, Month, Day of the Week, and Weekend: Derived time-related features.
-- Encoding categorical variables using LabelEncoder for fields such as contributing factors, boroughs, and accident severity.
-- Splitting the data into training (70%) and testing (30%) sets.
-- 
-### 2. Accident Severity Prediction Model (Prediction Models.ipynb)
-This notebook implements a RandomForestClassifier to predict the severity of accidents, using features such as location (borough), contributing factors, and time-related information.
-
-- The model is configured with:
-  - 100 estimators
-  - Random state of 42
-- **Performance Metrics (without SMOTE):**
-  - **Accuracy**: 75%
-  - **Precision**: 41.6%
-  - **Recall**: 35.3%
-  - **F1 Score**: 36.9%
-  - The model performs well for "No Injury" cases, but struggles with minority classes like "Fatal" and "Major Injury" due to class imbalance.
-
-- **Performance Metrics (with SMOTE applied):**
-  - **Accuracy**: 69%
-  - **Precision**: 42.9%
-  - **Recall**: 47.9%
-  - **F1 Score**: 31.5%
-  - SMOTE improves recall for minority classes, especially "Fatal" cases, but reduces overall accuracy and precision.
-
-- **Logistic Regression Baseline:**
-  - **Accuracy**: 54.3%
-  - **Precision**: 32.4%
-  - **Recall**: 43.5%
-  - **F1 Score**: 28.9%
-  - Logistic regression has lower accuracy overall, but slightly better recall for some minority classes compared to RandomForest.
-
-#### Observations:
-- The RandomForestClassifier without SMOTE achieves the highest accuracy but struggles with recall for minority classes.
-- Applying SMOTE increases recall for minority classes, though it results in a trade-off with precision and accuracy.
-- The logistic regression model, while lower in accuracy, provides a balanced alternative but struggles with multi-class separation.
-
-The confusion matrix and other visualizations can be found in the `visualizations/confusion_matrix.png` file. Future improvements may include hyperparameter tuning, experimenting with other resampling techniques, or testing more advanced models like XGBoost to handle class imbalance more effectively.
-
-### 3. Heatmap Visualization (HeatMap.ipynb)
-
-This notebook generates interactive heatmaps using the **folium** library to visualize accident hotspots across NYC.
-
-- The heatmap highlights areas with a high concentration of accidents and allows users to explore patterns geographically.
-- The output heatmap is saved as an HTML file (`visualizations/nyc_heatmap.html`) that can be viewed in any web browser.
+> The Airflow DAG lives in a separate Docker environment at `dags/nyc_collisions_retrain.py`.
 
 ---
 
-## Visualizations Folder
+## Model
 
-The `visualizations/` folder contains key output files:
+**Target**: 4-class accident severity — `No Injury`, `Minor Injury`, `Major Injury`, `Fatal`
 
-- `ny_accidents_fatal_heatmap.html`: An interactive heatmap showing fatal accident hotspots in New York City.
-- `severity_random_forest_Confusion_Matrix.png`: A visual representation of the RandomForestClassifier's performance for predicting accident severity.
-- `severity_random_forest_smote_Confusion_Matrix.png`: A confusion matrix for the RandomForest model enhanced with SMOTE (Synthetic Minority Over-sampling Technique).
-- `severity_regression_Confusion_Matrix.png`: A confusion matrix for the severity regression model.
+**Features** (location + time only — no post-crash data):
+
+- `on_street_name` — top 100 Queens streets by crash volume (OneHotEncoded), rest → "Other"
+- `time_of_day` — Late Night / Morning Rush / Midday / Evening Rush / Night (ordinal)
+- `season` — Winter / Spring / Summer / Fall (ordinal)
+- `is_weekend`, `is_rush_hour`, `month`, `day_of_week` (numeric pass-through)
+
+**Why no contributing factors or person details?** Those fields only exist after a crash occurs. The intended question is pre-crash: _given where and when, how bad do crashes tend to be here?_
+
+**Training**: Stratified 70/30 split → SMOTE on train only → 5-fold CV → XGBoost (`n_estimators=500`, `max_depth=6`, `learning_rate=0.05`). One row per crash (deduplicated from person-level raw data).
+
+**Known limitations**: Fatal crashes are < 0.2% of Queens records. Location + time are strong signals for crash _frequency_ but weaker for crash _severity_ — the same corridor at the same hour can produce a fender-bender or a fatality depending on vehicle type, speed, and angle of impact. See the Severity Predictor page for full model caveats.
 
 ---
 
-## How to Use the Repository
-
-### 1. Clone the repository
+## Running Locally
 
 ```bash
 git clone https://github.com/RasheedMartin/Nyc-Vehicle-Collisions.git
-cd nyc-vehicle-collisions
-```
-
-### 2. Install dependencies
-
-This project uses Python and the following libraries:
-
-- **pandas**
-- **numpy**
-- **scikit-learn**
-- **matplotlib**
-- **seaborn**
-- **folium**
-
-Install the dependencies with:
-
-```bash
+cd Nyc-Vehicle-Collisions
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 3. Run the notebooks
+**Run the pipeline** (requires NYC Open Data access — no API key needed for public datasets):
 
-You can open and run each notebook in your preferred environment (Jupyter, VSCode, Google Colab, etc.).
+```bash
+python src/data-pipeline/fetch.py --mode full
+python src/data-pipeline/clean.py
+python src/data-pipeline/features.py --borough QUEENS
+python src/data-pipeline/train.py --borough QUEENS
+```
 
-### 4. Visualize the results
+**Launch the app**:
 
-- Check the classification model performance by viewing the confusion matrix in `visualizations/confusion_matrix.png`.
-- Open the `visualizations/nyc_heatmap.html` file in a browser to explore the heatmap.
+```bash
+streamlit run app/main.py
+```
+
+**Cloud deployment** (Railway): set `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` as environment variables. The app pulls all artifacts from Cloudflare R2 on startup if not found locally.
 
 ---
 
-## Future Work
+## MLOps — Weekly Retraining
 
-- **Improve model performance**: The recall for "Major Injury" cases is low (6%). Future iterations could include hyperparameter tuning or experimenting with different models to improve classification performance.
-- **Data enhancement**: Adding more features or balancing the dataset may help in resolving the class imbalance issues.
-- **Additional visualizations**: Future efforts could include time-series analysis or spatial clustering to further analyze accident trends.
+The Airflow DAG `nyc_collisions_retrain` runs every Monday at 6am:
+
+```
+fetch (incremental) → clean → features → train → upload_r2 → redeploy_railway
+```
+
+`redeploy_railway` calls the GitHub Actions `workflow_dispatch` API, which triggers the Railway CLI to redeploy the live app with the new model artifacts.
+
+**Airflow Variables required**:
+
+| Variable               | Description                                 |
+| ---------------------- | ------------------------------------------- |
+| `R2_ACCOUNT_ID`        | Cloudflare R2 account ID                    |
+| `R2_ACCESS_KEY_ID`     | R2 access key                               |
+| `R2_SECRET_ACCESS_KEY` | R2 secret key                               |
+| `R2_BUCKET_NAME`       | R2 bucket (default: `nyc-collisions`)       |
+| `GITHUB_TOKEN`         | PAT with `workflow` scope                   |
+| `GITHUB_REPO`          | `RasheedMartin/Nyc-Vehicle-Collisions`      |
+| `GITHUB_REF`           | Branch with workflow file (default: `main`) |
+
+**GitHub Secrets required** (for the Actions workflow):
+
+| Secret                 | Description             |
+| ---------------------- | ----------------------- |
+| `RAILWAY_TOKEN`        | Railway API token       |
+| `RAILWAY_SERVICE_NAME` | Service name in Railway |
+
+---
+
+## Data Source
+
+NYC Open Data — Motor Vehicle Collisions:
+
+- [Crashes](https://data.cityofnewyork.us/Public-Safety/Motor-Vehicle-Collisions-Crashes/h9gi-nx95) — one row per crash event
+- [Person](https://data.cityofnewyork.us/Public-Safety/Motor-Vehicle-Collisions-Person/f55k-p6yu) — one row per person involved
+
+Joined on `collision_id`. Data updated daily by NYPD.
 
 ---
 
 ## License
 
-This project is licensed under the MIT License. See the LICENSE file for more details.
-```
-
-### Key Changes:
-- Added horizontal lines for better section separation.
-- Used code blocks for command line instructions and file paths.
-- Made library names bold for emphasis.
-- Ensured consistent formatting for lists and sections.
+MIT

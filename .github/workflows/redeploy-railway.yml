@@ -1,0 +1,22 @@
+name: Redeploy to Railway
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Model has been retrained and we need to redeploy our app"
+        required: false
+        default: "Triggered by Airflow retraining pipeline"
+
+jobs:
+  redeploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Railway CLI
+        run: npm install -g @railway/cli
+
+      - name: Redeploy service
+        run: railway redeploy --service "$RAILWAY_SERVICE_NAME" --yes
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          RAILWAY_SERVICE_NAME: ${{ secrets.RAILWAY_SERVICE_NAME }}

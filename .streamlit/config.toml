@@ -1,0 +1,22 @@
+[server]
+headless = true
+enableCORS = true
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
+
+[ui]
+hideTopBar = false
+
+[client]
+showErrorDetails = false
+toolbarMode = "minimal"    # hides the Deploy button — options: "auto" | "minimal" | "viewer" | "developer"
+
+[theme]
+base = "dark"
+backgroundColor = "#0d0d14"
+secondaryBackgroundColor = "#13131f"
+textColor = "#e8e3f0"
+font = "sans serif"
+
