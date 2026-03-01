@@ -29,7 +29,6 @@ PROCESSED_DIR = Path("data/processed")
 BOROUGH_SHP   = Path("Borough Boundaries/geo_borough.shp")
 
 logging.basicConfig(
-    filename="log/clean.log",
     level=logging.INFO,
     format="%(asctime)s  %(levelname)s  %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",

@@ -43,7 +43,6 @@ MODELS_DIR      = Path("models")
 
 
 logging.basicConfig(
-    filename="log/train.log",
     level=logging.INFO,
     format="%(asctime)s  %(levelname)s  %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",

@@ -18,14 +18,21 @@ XAXIS  = dict(gridcolor=GRID_COLOR, tickfont=dict(family="DM Mono", size=10), co
 YAXIS  = dict(gridcolor=GRID_COLOR, tickfont=dict(family="DM Mono", size=10), color=SUBTEXT)
 LEGEND = dict(font=dict(family="DM Mono", size=10), bgcolor="rgba(0,0,0,0)", bordercolor="rgba(0,0,0,0)")
 
+year_min = int(df["year"].min())
+year_max = int(df["year"].max())
+
 # HTML: Bebas Neue font + clamp sizing + monospace label — can't do this with st.header
-st.markdown("""
+st.markdown(f"""
 <div style="padding:2rem 0 1rem 0;">
   <div style="font-family:'DM Mono',monospace;font-size:0.68rem;letter-spacing:0.2em;
               text-transform:uppercase;color:#6b6880;">01 · Overview</div>
   <h1 style="font-size:clamp(2rem,5vw,3.5rem);margin:0.3rem 0 0 0;color:#f0ecff;">
     Queens at a Glance
   </h1>
+  <div style="font-family:'DM Mono',monospace;font-size:0.72rem;letter-spacing:0.12em;
+              text-transform:uppercase;color:#6b6880;margin-top:0.4rem;">
+    {year_min} – {year_max}
+  </div>
 </div>
 """, unsafe_allow_html=True)
 

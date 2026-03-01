@@ -49,7 +49,6 @@ RAW_DIR    = Path("data/raw")
 META_FILE  = RAW_DIR / ".last_fetch.json"
 
 logging.basicConfig(
-    filename="log/fetch.log",
     level=logging.INFO,
     format="%(asctime)s  %(levelname)s  %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
