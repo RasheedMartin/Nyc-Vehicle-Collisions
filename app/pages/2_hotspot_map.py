@@ -23,15 +23,22 @@ from theme import SEVERITY_ORDER, SUBTEXT, HEATMAP_COLOR_RANGE
 
 df = load_data()
 
+_year_list = df["year"].drop_nulls().cast(pl.Int32).unique().sort().to_list()
+year_label = f"{_year_list[0]} – {_year_list[-1]}" if len(_year_list) > 1 else str(_year_list[0]) if _year_list else ""
+
 # ── Header (HTML: Bebas Neue + custom sizing) ─────────────────────────────────
 
-st.markdown("""
+st.markdown(f"""
 <div style="padding:2rem 0 1rem 0;">
   <div style="font-family:'DM Mono',monospace;font-size:0.68rem;letter-spacing:0.2em;
               text-transform:uppercase;color:#6b6880;">02 · Hotspot Map</div>
   <h1 style="font-size:clamp(2rem,5vw,3.5rem);margin:0.3rem 0 0 0;color:#f0ecff;">
     Where Crashes Happen
   </h1>
+  <div style="font-family:'DM Mono',monospace;font-size:0.72rem;letter-spacing:0.12em;
+              text-transform:uppercase;color:#6b6880;margin-top:0.4rem;">
+    {year_label}
+  </div>
 </div>
 """, unsafe_allow_html=True)
 

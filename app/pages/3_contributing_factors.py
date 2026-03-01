@@ -15,19 +15,26 @@ from theme import  SEVERITY_COLORS, SEVERITY_ORDER, CHART_BG, GRID_COLOR, TEXT, 
 
 df = load_data()
 
+_year_list = df["year"].drop_nulls().cast(pl.Int32).unique().sort().to_list()
+year_label = f"{_year_list[0]} – {_year_list[-1]}" if len(_year_list) > 1 else str(_year_list[0]) if _year_list else ""
+
 LAYOUT = dict(paper_bgcolor=CHART_BG, plot_bgcolor=CHART_BG,
               font=dict(family="DM Sans", color=TEXT, size=11))
 XAXIS  = dict(gridcolor=GRID_COLOR, color=SUBTEXT)
 YAXIS  = dict(gridcolor=GRID_COLOR, tickfont=dict(family="DM Mono", size=10), color=SUBTEXT)
 LEGEND = dict(font=dict(family="DM Mono", size=10), bgcolor="rgba(0,0,0,0)", bordercolor="rgba(0,0,0,0)")
 
-st.markdown("""
+st.markdown(f"""
 <div style="padding:2rem 0 1.5rem 0;">
   <div style="font-family:'DM Mono',monospace;font-size:0.68rem;letter-spacing:0.2em;
               text-transform:uppercase;color:#6b6880;">03 · Contributing Factors</div>
   <h1 style="font-size:clamp(2rem,5vw,3.5rem);margin:0.3rem 0 0 0;color:#f0ecff;">
     Why Crashes Happen
   </h1>
+  <div style="font-family:'DM Mono',monospace;font-size:0.72rem;letter-spacing:0.12em;
+              text-transform:uppercase;color:#6b6880;margin-top:0.4rem;">
+    {year_label}
+  </div>
 </div>
 """, unsafe_allow_html=True)
 

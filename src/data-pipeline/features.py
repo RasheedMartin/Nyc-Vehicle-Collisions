@@ -49,17 +49,16 @@ log = logging.getLogger(__name__)
 # Borough is only included as a feature when training across ALL boroughs
 BOROUGH_FEATURE = "borough"
 
+# Top N street names to keep individually — the rest are collapsed to "Other"
+# Keeps OHE cardinality manageable (~100 binary columns) while preserving the
+# highest-volume corridors that drive the most statistical signal.
+TOP_STREETS_N = 100
+
 # Nominal categoricals — no order between values
 # OneHotEncoder: borough=BROOKLYN gets its own binary column,
 # completely independent of borough=MANHATTAN
 NOMINAL_FEATURES = [
-    "contributing_factor_vehicle_1",
-    "contributing_factor_vehicle_2",
-    "borough",
-    "person_type",
-    "person_sex",
-    "bodily_injury",
-    "ejection",
+    "on_street_name",   # location feature: top-N streets + "Other"
 ]
 
 # Ordered categoricals — a real sequence exists between values
@@ -71,7 +70,6 @@ ORDERED_FEATURES = {
 
 # Numeric — passed through as-is, no encoding needed
 NUMERIC_FEATURES = [
-    "person_age",
     "is_weekend",
     "is_rush_hour",
     "month",
@@ -105,6 +103,29 @@ def fill_nulls(df: pl.DataFrame, cat_cols: list[str], num_cols: list[str]) -> pl
     num_exprs = [pl.col(c).fill_null(0)         for c in num_cols if c in df.columns]
     exprs = cat_exprs + num_exprs
     return df.with_columns(exprs) if exprs else df
+
+
+def cap_street_names(df: pl.DataFrame, n: int = TOP_STREETS_N) -> pl.DataFrame:
+    """
+    Normalise casing then replace streets outside the top-N by crash volume with 'Other'.
+    Keeps OHE cardinality manageable while preserving the highest-signal corridors.
+    Null / blank street names are left as-is (fill_nulls handles them downstream).
+    """
+    df = df.with_columns(
+        pl.col("on_street_name").str.to_uppercase().str.strip_chars()
+    )
+    top = (
+        df.filter(pl.col("on_street_name").is_not_null() & (pl.col("on_street_name") != ""))
+          .group_by("on_street_name").len()
+          .sort("len", descending=True).head(n)
+          ["on_street_name"].to_list()
+    )
+    return df.with_columns(
+        pl.when(pl.col("on_street_name").is_in(top))
+          .then(pl.col("on_street_name"))
+          .otherwise(pl.lit("Other"))
+          .alias("on_street_name")
+    )
 
 
 def encode_target(df: pl.DataFrame) -> pl.DataFrame:
@@ -220,15 +241,28 @@ def run_features(
             raise ValueError(f"Invalid borough '{borough}'. Choose from: {VALID_BOROUGHS}")
         df = df.filter(pl.col("borough") == borough)
         log.info(f"  Filtered to {borough}: {len(df):,} rows")
-        # Borough is now a constant — drop it from nominal features
+        # Borough is now constant — exclude it; street name carries the location signal
         nominal_cols = NOMINAL_FEATURES.copy()
     else:
         log.info("  No borough filter — training on all boroughs")
-        # Include borough as a feature when training across all 5
+        # Include borough as a feature so the model can distinguish boroughs
         nominal_cols = NOMINAL_FEATURES + [BOROUGH_FEATURE]
 
     if len(df) == 0:
         raise ValueError(f"No rows remaining after filtering to borough='{borough}'")
+
+    # Deduplicate to one row per crash.
+    # The cleaned parquet has one row per person-in-crash; since we no longer use
+    # person-level features (type, sex, age) we must collapse to crash-level to
+    # avoid identical duplicate rows inflating the training set.
+    before_dedup = len(df)
+    df = df.unique(subset=["collision_id"])
+    log.info(f"  Deduplicated to crash level: {before_dedup:,} → {len(df):,} rows")
+
+    # Cap on_street_name cardinality before encoding
+    if "on_street_name" in df.columns:
+        df = cap_street_names(df)
+        log.info(f"  Street names capped to top-{TOP_STREETS_N} + 'Other'")
 
     # Drop rows with no target
     before = len(df)
@@ -237,7 +271,7 @@ def run_features(
         log.warning(f"  Dropped {before - len(df):,} rows with null target")
 
     # Resolve which feature columns exist in this dataset
-    nominal_cols = select_available(df, NOMINAL_FEATURES, "nominal")
+    nominal_cols = select_available(df, nominal_cols, "nominal")
     ordered_cols = select_available(df, list(ORDERED_FEATURES.keys()), "ordered")
     numeric_cols = select_available(df, NUMERIC_FEATURES, "numeric")
     all_input_cols = nominal_cols + ordered_cols + numeric_cols

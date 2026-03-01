@@ -143,9 +143,12 @@ pg = st.navigation(
             st.Page(str(pages_dir / "3_contributing_factors.py"),
                     title="Contributing Factors",
                     icon="🔍"),
+            st.Page(str(pages_dir / "4_trends.py"),
+                    title="Trends",
+                    icon="📈"),
         ],
         "Model": [
-            st.Page(str(pages_dir / "4_severity_predictor.py"),
+            st.Page(str(pages_dir / "5_severity_predictor.py"),
                     title="Severity Predictor",
                     icon="🤖"),
         ],
