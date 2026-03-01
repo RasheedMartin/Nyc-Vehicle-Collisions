@@ -48,11 +48,18 @@ def _r2_client():
 def _pull_from_r2(r2_key: str, local_path: Path) -> None:
     """Download a single artifact from R2 to local_path if not already present."""
     if local_path.exists():
+        print(f"[artifacts] already exists: {local_path.name}", flush=True)
         return
     bucket = os.environ.get("R2_BUCKET_NAME", "nyc-collisions")
     local_path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[artifacts] downloading {r2_key} → {local_path}", flush=True)
     st.toast(f"Downloading {local_path.name} from R2…", icon="⬇️")
-    _r2_client().download_file(bucket, r2_key, str(local_path))
+    try:
+        _r2_client().download_file(bucket, r2_key, str(local_path))
+        print(f"[artifacts] done: {local_path.name} ({local_path.stat().st_size:,} bytes)", flush=True)
+    except Exception as e:
+        print(f"[artifacts] FAILED {r2_key}: {e}", flush=True)
+        raise
 
 def _ensure_artifacts() -> None:
     """Pull all required artifacts from R2 if running in cloud (no local files)."""
@@ -82,7 +89,9 @@ def _ensure_artifacts() -> None:
         _pull_from_r2(r2_key, local_path)
 
 # Pull artifacts before anything else runs
+print("[startup] checking artifacts…", flush=True)
 _ensure_artifacts()
+print("[startup] artifacts ready", flush=True)
 
 
 # ── Loaders ───────────────────────────────────────────────────────────────────
@@ -91,8 +100,14 @@ _ensure_artifacts()
 def load_data() -> pl.DataFrame:
     if not DATA_PATH.exists():
         full_path = ROOT / "data" / "processed" / "collisions.parquet"
-        return pl.read_parquet(full_path).filter(pl.col("borough") == "QUEENS")
-    return pl.read_parquet(DATA_PATH)
+        print(f"[load_data] reading full parquet and filtering to QUEENS…", flush=True)
+        df = pl.read_parquet(full_path).filter(pl.col("borough") == "QUEENS")
+        print(f"[load_data] done: {len(df):,} rows", flush=True)
+        return df
+    print(f"[load_data] reading {DATA_PATH}…", flush=True)
+    df = pl.read_parquet(DATA_PATH)
+    print(f"[load_data] done: {len(df):,} rows", flush=True)
+    return df
 
 @st.cache_data
 def load_feature_meta() -> dict:
