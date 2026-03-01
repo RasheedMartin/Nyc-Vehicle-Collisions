@@ -58,7 +58,7 @@ XGBOOST_PARAMS = {
     "colsample_bytree":  0.8,
     "eval_metric":       "mlogloss",
     "random_state":      42,
-    "n_jobs":            -1,
+    "n_jobs":            2,
     "tree_method":       "hist",
 }
 
@@ -183,8 +183,11 @@ def run_train(
     if missing:
         log.warning(f"  Feature columns missing (skipped): {missing}")
 
+    df = stratified_sample(df)
+
     X = df.select(available).to_numpy().astype(np.float32)
     y = df["severity_encoded"].to_numpy().astype(np.int8)
+    del df
 
     # ── Stratified train / test split ─────────────────────────────────────────
     X_train, X_test, y_train, y_test = train_test_split(
@@ -193,10 +196,12 @@ def run_train(
         random_state=42,
         stratify=y,
     )
+    del X, y
     log.info(f"  Train: {len(X_train):,}  Test: {len(X_test):,}")
 
     # ── SMOTE on training set only ────────────────────────────────────────────
     X_train_res, y_train_res = apply_smote(X_train, y_train, severity_order)
+    del X_train, y_train
 
     # ── Cross-validation ──────────────────────────────────────────────────────
     log.info(f"Running {cv_folds}-fold stratified cross-validation …")
@@ -209,12 +214,13 @@ def run_train(
         cv_model, X_train_res, y_train_res,
         cv=StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42),
         scoring="f1_macro",
-        n_jobs=-1,
+        n_jobs=1,
     )
     log.info(
         f"  CV F1 (macro): {cv_scores.mean():.4f} ± {cv_scores.std():.4f}  "
         f"[{', '.join(f'{s:.3f}' for s in cv_scores)}]"
     )
+    del cv_model
 
     # ── Final fit ─────────────────────────────────────────────────────────────
     log.info("Training final model …")
