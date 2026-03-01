@@ -25,7 +25,10 @@ import os
 import json
 import logging
 import argparse
+import time
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import polars as pl
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -53,7 +56,18 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+CRASH_COLS = [
+    "collision_id", "crash_date", "crash_time",
+    "latitude", "longitude",
+    "on_street_name", "off_street_name",
+    "number_of_persons_injured", "number_of_persons_killed",
+    "contributing_factor_vehicle_1", "contributing_factor_vehicle_2",
+]
 
+PERSON_COLS = [
+    "collision_id", "person_age", "person_type",
+    "person_sex",
+]
 # ── Socrata client ────────────────────────────────────────────────────────────
 
 class SocrataClient:
@@ -62,6 +76,20 @@ class SocrataClient:
     def __init__(self, app_token: str | None = None):
         self.app_token = app_token or os.getenv("NYC_OPEN_DATA_APP_TOKEN")
         self.session = requests.Session()
+
+        # Retry on transient errors: 429 (rate limit), 500/502/503/504 (server errors).
+        # Exponential backoff: waits 2s, 4s, 8s between retries.
+        retry = Retry(
+            total=5,
+            backoff_factor=2,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://",  adapter)
+
         if self.app_token:
             self.session.headers.update({"X-App-Token": self.app_token})
             log.info("Socrata app token loaded!")
@@ -112,9 +140,41 @@ class SocrataClient:
             if where:
                 params["$where"] = where
 
-            resp = self.session.get(url, params=params, timeout=60)
-            resp.raise_for_status()
-            batch = resp.json()
+            # Retry loop handles both ReadTimeout and truncated JSON responses.
+            # Socrata occasionally drops the connection mid-transfer, producing
+            # a partial payload that parses as JSONDecodeError.
+            MAX_ATTEMPTS = 6
+            BASE_TIMEOUT = 120
+            last_exc = None
+            batch = None
+            for attempt in range(1, MAX_ATTEMPTS + 1):
+                wait = 2 ** attempt  # 2, 4, 8, 16, 32, 64 seconds
+                try:
+                    resp = self.session.get(url, params=params, timeout=BASE_TIMEOUT)
+                    resp.raise_for_status()
+
+                    # Validate JSON before accepting — a truncated transfer
+                    # returns 200 OK but the body is incomplete
+                    batch = resp.json()
+                    break  # clean parse — proceed
+
+                except requests.exceptions.ReadTimeout as e:
+                    last_exc = e
+                    if attempt == MAX_ATTEMPTS:
+                        log.error(f"  Timed out after {MAX_ATTEMPTS} attempts at offset={offset:,}")
+                        raise
+                    log.warning(f"  ReadTimeout at offset={offset:,} "
+                                f"(attempt {attempt}/{MAX_ATTEMPTS}) — retrying in {wait}s")
+                    time.sleep(wait)
+
+                except requests.exceptions.JSONDecodeError as e:
+                    last_exc = e
+                    if attempt == MAX_ATTEMPTS:
+                        log.error(f"  Truncated JSON after {MAX_ATTEMPTS} attempts at offset={offset:,}")
+                        raise
+                    log.warning(f"  Truncated JSON at offset={offset:,} "
+                                f"(attempt {attempt}/{MAX_ATTEMPTS}) — retrying in {wait}s")
+                    time.sleep(wait)
 
             if not batch:
                 break
@@ -131,7 +191,7 @@ class SocrataClient:
             log.warning(f"No data returned for dataset {dataset_id}")
             return pl.DataFrame()
 
-        normalized_frames = normalize_frames(frames)
+        normalized_frames = normalize_frames(frames, dataset_id)
         df = pl.concat(normalized_frames, how="vertical")  # now all columns match
 
         # df = pl.concat(frames, how="diagonal")  # diagonal handles mismatched schemas across pages
@@ -182,20 +242,15 @@ def merge_with_existing(new_df: pl.DataFrame, path: Path, id_col: str) -> pl.Dat
     )
     return combined
 
-def normalize_frames(frames: list[pl.DataFrame]) -> list[pl.DataFrame]:
+def normalize_frames(frames: list[pl.DataFrame], database_id: str | None = None) -> list[pl.DataFrame]:
     """Ensure all frames have the same columns (add missing columns as nulls)."""
-    all_cols = set()
-    for f in frames:
-        all_cols.update(f.columns)
-    all_cols = list(all_cols)
 
     normalized = []
-    for f in frames:
-        missing = [c for c in all_cols if c not in f.columns]
-        for c in missing:
-            f = f.with_columns(pl.lit(None).alias(c))
-        # Reorder to match
-        f = f.select(all_cols)
+    for idx, f in enumerate(frames):  
+        if database_id == PERSON_ID and "person_sex" not in f.columns:
+            f = f.with_columns(pl.lit("U").alias("person_sex"))
+        f = f.select(CRASH_COLS) if database_id == CRASHES_ID else f.select(PERSON_COLS)
+
         normalized.append(f)
     return normalized
 

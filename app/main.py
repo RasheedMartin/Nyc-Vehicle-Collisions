@@ -1,6 +1,6 @@
 """
-app.py — Queens Vehicle Collision Dashboard
-Run with: streamlit run app/app.py
+main.py — Queens Vehicle Collision Dashboard
+Run with: streamlit run app/main.py
 """
 
 import json
@@ -8,6 +8,7 @@ import joblib
 import streamlit as st
 import polars as pl
 from pathlib import Path
+import os
 
 st.set_page_config(
     page_title="Queens Collision Intelligence",
@@ -27,6 +28,62 @@ FEATURE_META_PATH = PROCESSED_DIR / "feature_meta.json"
 TRAIN_META_PATH   = MODELS_DIR    / "train_meta.json"
 MODEL_PATH        = MODELS_DIR    / "severity_model.joblib"
 PREPROCESSOR_PATH = PROCESSED_DIR / "preprocessor.joblib"
+
+# ── R2 artifact loader ────────────────────────────────────────────────────────
+
+def _r2_client():
+    """Build a boto3 S3 client pointed at Cloudflare R2."""
+    import boto3
+    from botocore.config import Config
+    account_id = os.environ["R2_ACCOUNT_ID"]
+    return boto3.client(
+        "s3",
+        endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+        aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+        config=Config(signature_version="s3v4"),
+        region_name="auto",
+    )
+
+def _pull_from_r2(r2_key: str, local_path: Path) -> None:
+    """Download a single artifact from R2 to local_path if not already present."""
+    if local_path.exists():
+        return
+    bucket = os.environ.get("R2_BUCKET_NAME", "nyc-collisions")
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    st.toast(f"Downloading {local_path.name} from R2…", icon="⬇️")
+    _r2_client().download_file(bucket, r2_key, str(local_path))
+
+def _ensure_artifacts() -> None:
+    """Pull all required artifacts from R2 if running in cloud (no local files)."""
+    # Skip if all files already exist locally (local dev)
+    if all(p.exists() for p in [DATA_PATH, MODEL_PATH, PREPROCESSOR_PATH,
+                                  FEATURE_META_PATH, TRAIN_META_PATH]):
+        return
+
+    # Only attempt R2 pull if credentials are present
+    if not os.environ.get("R2_ACCOUNT_ID"):
+        st.error(
+            "Artifact files not found locally and R2 credentials are not set. "
+            "Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME "
+            "as environment variables.",
+            icon="🚨",
+        )
+        st.stop()
+
+    artifacts = [
+        ("processed/QUEENS/collisions_queens.parquet", DATA_PATH),
+        ("processed/QUEENS/feature_meta.json",         FEATURE_META_PATH),
+        ("processed/QUEENS/preprocessor.joblib",       PREPROCESSOR_PATH),
+        ("models/QUEENS/severity_model.joblib",        MODEL_PATH),
+        ("models/QUEENS/train_meta.json",              TRAIN_META_PATH),
+    ]
+    for r2_key, local_path in artifacts:
+        _pull_from_r2(r2_key, local_path)
+
+# Pull artifacts before anything else runs
+_ensure_artifacts()
+
 
 # ── Loaders ───────────────────────────────────────────────────────────────────
 
@@ -56,55 +113,28 @@ def load_preprocessor():
     return joblib.load(PREPROCESSOR_PATH)
 
 
+pages_dir = Path(__file__).parent / "pages"
 
-# ── Landing ───────────────────────────────────────────────────────────────────
+pg = st.navigation(
+    {
+        "Analysis": [
+            st.Page(str(pages_dir / "1_overview.py"),
+                    title="Overview",
+                    icon="📊",
+                    default=True),
+            st.Page(str(pages_dir / "2_hotspot_map.py"),
+                    title="Hotspot Map",
+                    icon="🗺️"),
+            st.Page(str(pages_dir / "3_contributing_factors.py"),
+                    title="Contributing Factors",
+                    icon="🔍"),
+        ],
+        "Model": [
+            st.Page(str(pages_dir / "4_severity_predictor.py"),
+                    title="Severity Predictor",
+                    icon="🤖"),
+        ],
+    }
+)
 
-st.markdown("""
-<div style="padding:3rem 0 2rem 0;">
-  <div style="font-family:'DM Mono',monospace; font-size:0.68rem; letter-spacing:0.2em;
-              text-transform:uppercase; color:#6b6880; margin-bottom:0.8rem;">
-    NYC · Vehicle Collision Intelligence
-  </div>
-  <h1 style="font-family:'Bebas Neue',sans-serif; font-size:clamp(3rem,8vw,5.5rem);
-             line-height:0.95; margin:0; color:#f0ecff; letter-spacing:0.02em;">
-    Queens<br/>
-    <span style="color:#ef4444;">Crash</span><br/>
-    Report
-  </h1>
-  <div style="width:60px; height:3px; background:#ef4444; margin:1.5rem 0;"></div>
-  <p style="font-family:'DM Sans',sans-serif; font-size:1rem; color:#9d99ae;
-            max-width:520px; line-height:1.75; font-weight:300;">
-    An evidence-based analysis of motor vehicle collisions in Queens, New York —
-    examining where crashes cluster, what causes them, and what policy changes
-    could save lives.
-  </p>
-</div>
-""", unsafe_allow_html=True)
-
-cards = [
-    ("01", "Overview",           "Borough-wide statistics, severity breakdown, and year-over-year trends."),
-    ("02 — 03", "Maps & Factors","WebGL hotspot maps and contributing factor analysis for policy insight."),
-    ("04", "Severity Predictor", "XGBoost model trained on Queens data. Simulate conditions and predict crash severity."),
-]
-
-cols = st.columns(3)
-for col, (num, title, desc) in zip(cols, cards):
-    with col:
-        with st.container():
-            st.markdown(f"""
-            <div style="background:#13131f; border:1px solid #1f1f30; padding:1.5rem;
-                        border-radius:6px; height:100%;">
-            <div style="font-family:'DM Mono',monospace; font-size:0.62rem; letter-spacing:0.15em;
-                 ß       text-transform:uppercase; color:#6b6880; margin-bottom:0.7rem;">{num}</div>
-            <div style="font-family:'Bebas Neue',sans-serif; font-size:1.25rem;
-                        color:#f0ecff; margin-bottom:0.5rem; letter-spacing:0.04em;">{title}</div>
-            <div style="font-size:0.84rem; color:#9d99ae; line-height:1.6;">{desc}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-st.markdown("""
-<div style="margin-top:3rem; font-family:'DM Mono',monospace; font-size:0.62rem;
-            letter-spacing:0.1em; color:#2e2e42;">
-  DATA SOURCE: NYC OPEN DATA · MOTOR VEHICLE COLLISIONS · NYPD
-</div>
-""",  unsafe_allow_html=True)
+pg.run()

@@ -40,14 +40,15 @@ log = logging.getLogger(__name__)
 
 CRASH_COLS = [
     "collision_id", "crash_date", "crash_time",
-    "latitude", "longitude", "location",
+    "latitude", "longitude",
+    "on_street_name", "off_street_name",
     "number_of_persons_injured", "number_of_persons_killed",
     "contributing_factor_vehicle_1", "contributing_factor_vehicle_2",
 ]
 
 PERSON_COLS = [
     "collision_id", "person_age", "person_type",
-    "person_sex", "bodily_injury", "ejection",
+    "person_sex",
 ]
 
 # Typo/casing fixes — notebook 01 exact rename dict
@@ -117,7 +118,7 @@ def clean_crashes(df: pl.DataFrame) -> pl.DataFrame:
                                  .alias("crash_date"),
         ])
         # Drop rows with no location (notebook 01: dropna on LOCATION)
-        .filter(pl.col("location").is_not_null())
+        .filter(pl.col("latitude").is_not_null() & pl.col("longitude").is_not_null() )
         # NYC bounding box — notebook 01 exact bounds
         .filter(
             pl.col("latitude").is_between(LAT_MIN, LAT_MAX) &
@@ -240,8 +241,6 @@ def clean_person(df: pl.DataFrame) -> pl.DataFrame:
 
     # Fill remaining nulls and normalise "Does Not Apply"
     fill_map = {
-        "ejection":      "Unknown",
-        "bodily_injury": "Unknown",
         "person_type":   "Unknown",
         "person_sex":    "Unknown",
     }
@@ -406,7 +405,6 @@ def run_clean(
                 f"{crashes_path} not found. Run fetch.py first, or place "
                 f"the raw CSV at {csv_fallback}"
             )
-
     crashes = clean_crashes(crashes)
     crashes = assign_borough(crashes, borough_shp)
 

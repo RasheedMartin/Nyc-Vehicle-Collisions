@@ -168,14 +168,33 @@ if "contributing_factor_vehicle_1" in df.columns:
           </div>
         </div>""", unsafe_allow_html=True)
     with p2:
-        st.markdown("""
+        # Compute pedestrian/cyclist share of fatal crashes from actual data
+        if "person_type" in df.columns:
+            vuln_fatal = len(df.filter(
+                (pl.col("accident_severity") == "Fatal") &
+                (pl.col("person_type").is_in(["Pedestrian", "Bicyclist"]))
+            ))
+            total_fatal = len(df.filter(pl.col("accident_severity") == "Fatal"))
+            vuln_pct = vuln_fatal / total_fatal * 100 if total_fatal > 0 else 0
+        else:
+            vuln_fatal, total_fatal, vuln_pct = 0, 0, 0
+
+        st.markdown(f"""
         <div style="border-left:3px solid #f97316;padding:1.2rem 1.5rem;
                     background:#1a1000;border-radius:0 6px 6px 0;height:100%;">
           <div style="font-family:'DM Mono',monospace;font-size:0.65rem;letter-spacing:0.15em;
                       text-transform:uppercase;color:#f97316;margin-bottom:0.5rem;">Vulnerable Road Users</div>
           <div style="font-size:1rem;color:#e8e3f0;line-height:1.75;">
-            Pedestrians and cyclists face disproportionate injury severity.
-            Queens' Vision Zero plan identifies protected infrastructure on
-            high-fatality corridors as the highest-impact intervention available.
+            In this dataset, <strong>{vuln_pct:.0f}%</strong> of fatal crashes
+            ({vuln_fatal} of {total_fatal}) involved a pedestrian or cyclist.
+            NYC DOT Vision Zero identifies protected infrastructure —
+            pedestrian islands, protected bike lanes, leading pedestrian intervals —
+            as the highest-impact intervention for this group.
+            <span style="font-family:'DM Mono',monospace;font-size:0.7rem;color:#6b6880;
+                         display:block;margin-top:0.6rem;">
+              Source: NYC DOT Vision Zero Year 9 Report (2022) ·
+              <a href="https://www.nyc.gov/html/dot/html/pedestrians/visionzero.shtml"
+                 style="color:#6b6880;" target="_blank">nyc.gov/dot/visionzero</a>
+            </span>
           </div>
         </div>""", unsafe_allow_html=True)
