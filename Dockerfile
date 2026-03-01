@@ -26,4 +26,4 @@ EXPOSE 8501
 
 # CMD is overridden by railway.toml startCommand in production
 # For local docker run: docker run -e PORT=8501 ...
-CMD ["sh", "-c", "streamlit run app/main.py --server.port=${PORT:-8501} --server.address=0.0.0.0 --server.headless=true"]
+CMD ["sh", "-c", "streamlit run app/main.py --server.address=0.0.0.0 --server.headless=true"]
