@@ -18,8 +18,9 @@ XAXIS  = dict(gridcolor=GRID_COLOR, tickfont=dict(family="DM Mono", size=10), co
 YAXIS  = dict(gridcolor=GRID_COLOR, tickfont=dict(family="DM Mono", size=10), color=SUBTEXT)
 LEGEND = dict(font=dict(family="DM Mono", size=10), bgcolor="rgba(0,0,0,0)", bordercolor="rgba(0,0,0,0)")
 
-year_min = int(df["year"].min())
-year_max = int(df["year"].max())
+_years: pl.Series | None = df["year"].drop_nulls()
+year_min = int(_years.min())
+year_max = int(_years.max())
 
 # HTML: Bebas Neue font + clamp sizing + monospace label — can't do this with st.header
 st.markdown(f"""
