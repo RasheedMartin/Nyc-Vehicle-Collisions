@@ -53,7 +53,6 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from typing import Tuple
 
-# Load all environment variables
 load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -62,6 +61,8 @@ BASE_URL = "https://data.cityofnewyork.us/resource"
 CRASHES_ID = "h9gi-nx95"
 PERSON_ID = "f55k-p6yu"
 PAGE_SIZE = 50_000
+
+# Local fallback paths — written after every successful R2 push
 RAW_DIR = Path("data/raw")
 META_FILE = RAW_DIR / ".last_fetch.json"
 
@@ -97,6 +98,7 @@ PERSON_COLS = [
     "person_type",
     "person_sex",
 ]
+
 
 # ── R2 client ─────────────────────────────────────────────────────────────────
 
@@ -232,8 +234,6 @@ class SocrataClient:
         self.app_token = app_token or os.getenv("NYC_OPEN_DATA_APP_TOKEN")
         self.session = requests.Session()
 
-        # Retry on transient errors: 429 (rate limit), 500/502/503/504 (server errors).
-        # Exponential backoff: waits 2s, 4s, 8s between retries.
         retry = Retry(
             total=5,
             backoff_factor=2,
@@ -247,7 +247,7 @@ class SocrataClient:
 
         if self.app_token:
             self.session.headers.update({"X-App-Token": self.app_token})
-            log.info("Socrata app token loaded!")
+            log.info("Socrata app token loaded")
         else:
             log.warning(
                 "No app token — requests will be throttled. "
@@ -263,15 +263,7 @@ class SocrataClient:
     ) -> pl.DataFrame:
         """
         Fetch a full dataset or date-filtered slice via paginated SoQL queries.
-
-        Args:
-            dataset_id : Socrata 4x4 dataset identifier
-            date_col   : Name of the date column to filter on
-            since      : ISO date string lower bound  e.g. '2024-01-01'
-            until      : ISO date string upper bound  e.g. '2024-12-31'
-
-        Returns:
-            pl.DataFrame with all matching rows
+        Returns an empty DataFrame if nothing matched.
         """
         url = f"{BASE_URL}/{dataset_id}.json"
         frames = []
@@ -295,45 +287,38 @@ class SocrataClient:
             if where:
                 params["$where"] = where
 
-            # Retry loop handles both ReadTimeout and truncated JSON responses.
-            # Socrata occasionally drops the connection mid-transfer, producing
-            # a partial payload that parses as JSONDecodeError.
             MAX_ATTEMPTS = 6
             BASE_TIMEOUT = 120
-            last_exc = None
             batch = None
+
             for attempt in range(1, MAX_ATTEMPTS + 1):
-                wait = 2**attempt  # 2, 4, 8, 16, 32, 64 seconds
+                wait = 2**attempt
                 try:
                     resp = self.session.get(url, params=params, timeout=BASE_TIMEOUT)
                     resp.raise_for_status()
-
-                    # Validate JSON before accepting — a truncated transfer
-                    # returns 200 OK but the body is incomplete
                     batch = resp.json()
-                    break  # clean parse — proceed
-                except (
-                    requests.exceptions.ReadTimeout,
-                    requests.exceptions.ChunkedEncodingError,
-                    requests.exceptions.ConnectionError,
-                ) as e:
+                    break
+
+                except requests.exceptions.ReadTimeout:
                     if attempt == MAX_ATTEMPTS:
                         log.error(
-                            f"  Connection error after {MAX_ATTEMPTS} attempts at offset={offset:,}"
+                            f"  Timed out after {MAX_ATTEMPTS} attempts at offset={offset:,}"
                         )
                         raise
                     log.warning(
-                        f"  {type(e).__name__} at offset={offset:,} "
+                        f"  ReadTimeout at offset={offset:,} "
                         f"(attempt {attempt}/{MAX_ATTEMPTS}) — retrying in {wait}s"
                     )
                     time.sleep(wait)
 
-                except Exception as e:
-                    last_exc = e
+                except requests.exceptions.JSONDecodeError:
                     if attempt == MAX_ATTEMPTS:
+                        log.error(
+                            f"  Truncated JSON after {MAX_ATTEMPTS} attempts at offset={offset:,}"
+                        )
                         raise
                     log.warning(
-                        f"  {type(e).__name__} at offset={offset:,} "
+                        f"  Truncated JSON at offset={offset:,} "
                         f"(attempt {attempt}/{MAX_ATTEMPTS}) — retrying in {wait}s"
                     )
                     time.sleep(wait)
@@ -341,63 +326,38 @@ class SocrataClient:
             if not batch:
                 break
 
-            # Socrata returns a list of dicts — read directly into Polars
             frames.append(pl.DataFrame(batch))
             log.info(f"  offset={offset:>8,}  rows_fetched={len(batch):>6,}")
             offset += PAGE_SIZE
 
             if len(batch) < PAGE_SIZE:
-                break  # last page
+                break
 
         if not frames:
             log.warning(f"No data returned for dataset {dataset_id}")
             return pl.DataFrame()
 
-        normalized_frames = normalize_frames(frames, dataset_id)
-        df = pl.concat(normalized_frames, how="vertical")  # now all columns match
+        normalized = normalize_frames(frames, dataset_id)
+        df = pl.concat(normalized, how="vertical")
         log.info(f"Dataset {dataset_id}: {len(df):,} total rows fetched")
         return df
 
 
-# ── Metadata helpers ──────────────────────────────────────────────────────────
+# ── Normalise helpers ─────────────────────────────────────────────────────────
 
 
-def load_meta(r2: R2Client) -> dict:
-    """
-    Load fetch metadata.
-    Priority: R2 → local file → empty dict.
-    R2 is authoritative because it reflects runs from any machine.
-    """
-    meta = r2.download_json(R2_META_KEY)
-    if meta:
-        log.info("Metadata loaded from R2")
-        return meta
-
-    if META_FILE.exists():
-        log.info("Metadata loaded from local fallback")
-        with open(META_FILE) as f:
-            return json.load(f)
-
-    log.info("No existing metadata found — starting fresh")
-    return {}
-
-
-def save_meta(meta: dict, r2: R2Client):
-    """Persist metadata to R2 (primary) and local file (fallback copy)."""
-    r2.upload_json(meta, R2_META_KEY)
-
-    META_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(META_FILE, "w") as f:
-        json.dump(meta, f, indent=2)
-
-
-# ── Save / merge helpers ──────────────────────────────────────────────────────
-
-
-def save_parquet(df: pl.DataFrame, path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(path, compression="snappy")
-    log.info(f"Saved -> {path}  ({path.stat().st_size / 1e6:.1f} MB)")
+def normalize_frames(
+    frames: list[pl.DataFrame],
+    database_id: str | None = None,
+) -> list[pl.DataFrame]:
+    """Ensure all pages share the same column set before concat."""
+    normalized = []
+    for f in frames:
+        if database_id == PERSON_ID and "person_sex" not in f.columns:
+            f = f.with_columns(pl.lit("U").alias("person_sex"))
+        f = f.select(CRASH_COLS) if database_id == CRASHES_ID else f.select(PERSON_COLS)
+        normalized.append(f)
+    return normalized
 
 
 # ── Merge helper ──────────────────────────────────────────────────────────────
@@ -442,21 +402,36 @@ def _local_write_parquet(df: pl.DataFrame, path: Path):
     log.info(f"Local copy saved → {path}  ({path.stat().st_size / 1e6:.1f} MB)")
 
 
-# ── Normalise helpers ─────────────────────────────────────────────────────────
+# ── Metadata helpers ──────────────────────────────────────────────────────────
 
 
-def normalize_frames(
-    frames: list[pl.DataFrame],
-    database_id: str | None = None,
-) -> list[pl.DataFrame]:
-    """Ensure all pages share the same column set before concat."""
-    normalized = []
-    for f in frames:
-        if database_id == PERSON_ID and "person_sex" not in f.columns:
-            f = f.with_columns(pl.lit("U").alias("person_sex"))
-        f = f.select(CRASH_COLS) if database_id == CRASHES_ID else f.select(PERSON_COLS)
-        normalized.append(f)
-    return normalized
+def load_meta(r2: R2Client) -> dict:
+    """
+    Load fetch metadata.
+    Priority: R2 → local file → empty dict.
+    R2 is authoritative because it reflects runs from any machine.
+    """
+    meta = r2.download_json(R2_META_KEY)
+    if meta:
+        log.info("Metadata loaded from R2")
+        return meta
+
+    if META_FILE.exists():
+        log.info("Metadata loaded from local fallback")
+        with open(META_FILE) as f:
+            return json.load(f)
+
+    log.info("No existing metadata found — starting fresh")
+    return {}
+
+
+def save_meta(meta: dict, r2: R2Client):
+    """Persist metadata to R2 (primary) and local file (fallback copy)."""
+    r2.upload_json(meta, R2_META_KEY)
+
+    META_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(META_FILE, "w") as f:
+        json.dump(meta, f, indent=2)
 
 
 # ── Dataset load: R2 → local fallback ────────────────────────────────────────
@@ -513,20 +488,24 @@ def save_dataset(
 
 
 def run_fetch(
-    mode: str, start: str | None = None, end: str | None = None
+    mode: str,
+    start: str | None = None,
+    end: str | None = None,
 ) -> Tuple[pl.DataFrame, pl.DataFrame]:
 
     RAW_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Initialize Client
     r2 = R2Client()
     client = SocrataClient()
     meta = load_meta(r2)
     today = datetime.now().strftime("%Y-%m-%d")
+
+    # ── Determine date window ─────────────────────────────────────────────────
     match mode:
         case "full":
             since, until = None, None
             log.info("Mode: FULL — fetching entire dataset (this may take a while)")
+
         case "incremental":
             last_run = meta.get("last_successful_fetch")
             if not last_run:
@@ -538,12 +517,14 @@ def run_fetch(
                     "%Y-%m-%d"
                 )
                 until = today
-                log.info(f"Mode: INCREMENTAL — fetching {since} -> {until}")
+                log.info(f"Mode: INCREMENTAL — fetching {since} → {until}")
+
         case "range":
             since, until = start, end
-            log.info(f"Mode: RANGE — fetching {since} -> {until}")
+            log.info(f"Mode: RANGE — fetching {since} → {until}")
+
         case _:
-            raise ValueError(f"Unknown mode: {mode}")
+            raise ValueError(f"Unknown mode: {mode!r}")
 
     crashes_local = RAW_DIR / "crashes.parquet"
     person_local = RAW_DIR / "person.parquet"

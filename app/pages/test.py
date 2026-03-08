@@ -16,10 +16,7 @@ import polars as pl
 import plotly.graph_objects as go
 from main import load_data
 from theme import SEVERITY_COLORS, SEVERITY_ORDER, CHART_BG, GRID_COLOR, TEXT, SUBTEXT
-from dotenv import load_dotenv
 
-
-load_dotenv()
 # ── API config ────────────────────────────────────────────────────────────────
 
 API_URL = os.environ.get("INFERENCE_API_URL", "http://localhost:8000").rstrip("/")

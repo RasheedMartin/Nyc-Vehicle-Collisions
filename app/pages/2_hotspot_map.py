@@ -13,22 +13,30 @@ reference them in get_fill_color=["r","g","b",200].
 
 import sys
 from pathlib import Path
+
 sys.path.append(str(Path(__file__).parent.parent))
 
 import streamlit as st
 import polars as pl
 import pydeck as pdk
 from main import load_data
-from theme import SEVERITY_ORDER, SUBTEXT, HEATMAP_COLOR_RANGE
+from theme import SEVERITY_ORDER, HEATMAP_COLOR_RANGE
 
 df = load_data()
 
 _year_list = df["year"].drop_nulls().cast(pl.Int32).unique().sort().to_list()
-year_label = f"{_year_list[0]} – {_year_list[-1]}" if len(_year_list) > 1 else str(_year_list[0]) if _year_list else ""
+year_label = (
+    f"{_year_list[0]} – {_year_list[-1]}"
+    if len(_year_list) > 1
+    else str(_year_list[0])
+    if _year_list
+    else ""
+)
 
 # ── Header (HTML: Bebas Neue + custom sizing) ─────────────────────────────────
 
-st.markdown(f"""
+st.markdown(
+    f"""
 <div style="padding:2rem 0 1rem 0;">
   <div style="font-family:'DM Mono',monospace;font-size:0.68rem;letter-spacing:0.2em;
               text-transform:uppercase;color:#6b6880;">02 · Hotspot Map</div>
@@ -40,7 +48,9 @@ st.markdown(f"""
     {year_label}
   </div>
 </div>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # ── Filters — native components ───────────────────────────────────────────────
 
@@ -81,23 +91,33 @@ st.caption(f"Showing {len(map_df):,} crashes")
 # ── Build pandas payload ──────────────────────────────────────────────────────
 
 SEVERITY_RGB = {
-    "No Injury":    (74,  222, 128),
+    "No Injury": (74, 222, 128),
     "Minor Injury": (250, 204, 21),
     "Major Injury": (249, 115, 22),
-    "Fatal":        (239, 68,  68),
+    "Fatal": (239, 68, 68),
 }
 
-map_pd = map_df.select([
-    "latitude", "longitude", "accident_severity",
-    pl.col("crash_date").cast(pl.Utf8).alias("date"),
-    pl.col("contributing_factor_vehicle_1").alias("factor"),
-]).to_pandas()
+map_pd = map_df.select(
+    [
+        "latitude",
+        "longitude",
+        "accident_severity",
+        pl.col("crash_date").cast(pl.Utf8).alias("date"),
+        pl.col("contributing_factor_vehicle_1").alias("factor"),
+    ]
+).to_pandas()
 
 # Separate r/g/b columns — pydeck's JSON serialiser cannot handle Python
 # lists stored inside pandas cells (causes vars() __dict__ TypeError)
-map_pd["r"] = map_pd["accident_severity"].map(lambda s: SEVERITY_RGB.get(s, (150,150,150))[0])
-map_pd["g"] = map_pd["accident_severity"].map(lambda s: SEVERITY_RGB.get(s, (150,150,150))[1])
-map_pd["b"] = map_pd["accident_severity"].map(lambda s: SEVERITY_RGB.get(s, (150,150,150))[2])
+map_pd["r"] = map_pd["accident_severity"].map(
+    lambda s: SEVERITY_RGB.get(s, (150, 150, 150))[0]
+)
+map_pd["g"] = map_pd["accident_severity"].map(
+    lambda s: SEVERITY_RGB.get(s, (150, 150, 150))[1]
+)
+map_pd["b"] = map_pd["accident_severity"].map(
+    lambda s: SEVERITY_RGB.get(s, (150, 150, 150))[2]
+)
 
 # ── Layer ─────────────────────────────────────────────────────────────────────
 
@@ -113,7 +133,7 @@ if map_style == "Heatmap":
         intensity=1.0,
         threshold=0.05,
         pickable=True,
-        color_range=HEATMAP_COLOR_RANGE
+        color_range=HEATMAP_COLOR_RANGE,
     )
 
     tooltip = {
@@ -176,7 +196,8 @@ st.pydeck_chart(
     height=560,
 )
 if map_style == "Scatter Points":
-    st.markdown("""
+    st.markdown(
+        """
 <div style="
   position: relative;
   display: inline-block;
@@ -204,9 +225,12 @@ if map_style == "Scatter Points":
     <div><span style="background:#4ade80;width:10px;height:10px;display:inline-block;border-radius:50%;margin-right:6px;"></span>No Injury</div>
   </div>
 </div>
-""", unsafe_allow_html=True)
+""",
+        unsafe_allow_html=True,
+    )
 elif map_style == "Heatmap":
-    st.markdown("""
+    st.markdown(
+        """
     <div style="
       position: relative;
       display: inline-block;
@@ -245,7 +269,9 @@ elif map_style == "Heatmap":
         <span>High</span>
       </div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 # ── Top corridors — computed from data ────────────────────────────────────────
 # Uses on_street_name from the crashes dataset (added to CRASH_COLS in clean.py).
 # Falls back to lat/lon grid clusters if street names aren't in this parquet yet
@@ -257,14 +283,22 @@ severe = df.filter(pl.col("accident_severity").is_in(["Fatal", "Major Injury"]))
 
 if "on_street_name" in df.columns:
     corridors = (
-        severe
-        .filter(pl.col("on_street_name").is_not_null() & (pl.col("on_street_name") != ""))
-        .with_columns(pl.col("on_street_name").str.to_uppercase().str.strip_chars().alias("street"))
+        severe.filter(
+            pl.col("on_street_name").is_not_null() & (pl.col("on_street_name") != "")
+        )
+        .with_columns(
+            pl.col("on_street_name")
+            .str.to_uppercase()
+            .str.strip_chars()
+            .alias("street")
+        )
         .group_by("street")
         .agg(
             pl.len().alias("total_severe"),
-            pl.col("accident_severity").filter(pl.col("accident_severity") == "Fatal")
-              .len().alias("fatal_count"),
+            pl.col("accident_severity")
+            .filter(pl.col("accident_severity") == "Fatal")
+            .len()
+            .alias("fatal_count"),
         )
         .sort("total_severe", descending=True)
         .head(5)
@@ -278,29 +312,36 @@ if "on_street_name" in df.columns:
         st.caption("Fatal + Major Injury only · computed from your dataset")
 
         for _, row in corridors.iterrows():
-            pct = row["fatal_count"] / row["total_severe"] * 100 if row["total_severe"] > 0 else 0
-            st.markdown(f"""
+            pct = (
+                row["fatal_count"] / row["total_severe"] * 100
+                if row["total_severe"] > 0
+                else 0
+            )
+            st.markdown(
+                f"""
             <div style="display:flex;align-items:center;gap:1rem;
                         padding:0.75rem 1rem;margin-bottom:0.5rem;
                         background:#13131f;border:1px solid #1f1f30;border-radius:6px;">
               <div style="flex:1;font-family:'DM Sans',sans-serif;
-                          font-size:0.95rem;color:#e8e3f0;">{row['street'].title()}</div>
+                          font-size:0.95rem;color:#e8e3f0;">{row["street"].title()}</div>
               <div style="font-family:'Bebas Neue',sans-serif;font-size:1.4rem;
                           color:#ef4444;min-width:3rem;text-align:right;">
-                {int(row['total_severe']):,}
+                {int(row["total_severe"]):,}
               </div>
               <div style="font-family:'DM Mono',monospace;font-size:0.65rem;
                           color:#6b6880;min-width:5rem;text-align:right;">
-                {int(row['fatal_count'])} fatal ({pct:.0f}%)
+                {int(row["fatal_count"])} fatal ({pct:.0f}%)
               </div>
             </div>
-            """, unsafe_allow_html=True)
+            """,
+                unsafe_allow_html=True,
+            )
 
     with col2:
         total_severe = len(severe)
-        top5_severe  = int(corridors["total_severe"].sum())
-        pct_top5     = top5_severe / total_severe * 100 if total_severe > 0 else 0
-        top_street   = corridors.iloc[0]["street"].title()
+        top5_severe = int(corridors["total_severe"].sum())
+        pct_top5 = top5_severe / total_severe * 100 if total_severe > 0 else 0
+        top_street = corridors.iloc[0]["street"].title()
 
         st.metric("Crashes on Top 5 Streets", f"{top5_severe:,}")
         st.metric("Share of All Severe Crashes", f"{pct_top5:.1f}%")
@@ -308,7 +349,8 @@ if "on_street_name" in df.columns:
 
     # Policy callout — data-derived street names, sourced external stat
     top3 = ", ".join(corridors.head(3)["street"].str.title().tolist())
-    st.markdown(f"""
+    st.markdown(
+        f"""
     <div style="border-left:3px solid #ef4444;padding:1.2rem 1.5rem;
                 background:#1a0f0f;border-radius:0 6px 6px 0;margin-top:1rem;">
       <div style="font-family:'DM Mono',monospace;font-size:0.65rem;letter-spacing:0.15em;
@@ -328,7 +370,9 @@ if "on_street_name" in df.columns:
         </span>
       </div>
     </div>
-    """, unsafe_allow_html=True)
+    """,
+        unsafe_allow_html=True,
+    )
 
 else:
     # Street name columns not yet in parquet — show fallback message
