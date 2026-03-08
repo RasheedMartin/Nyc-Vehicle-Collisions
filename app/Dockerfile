@@ -16,7 +16,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy app source
-COPY app/ ./app/
+COPY . ./app/
 
 # Streamlit config
 RUN mkdir -p /app/.streamlit

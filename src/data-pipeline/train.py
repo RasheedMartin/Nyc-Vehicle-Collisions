@@ -32,14 +32,18 @@ from imblearn.over_sampling import SMOTE
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
 from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score,
-    f1_score, classification_report, confusion_matrix,
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    classification_report,
+    confusion_matrix,
 )
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-PROCESSED_DIR   = Path("data/processed")
-MODELS_DIR      = Path("models")
+PROCESSED_DIR = Path("data/processed")
+MODELS_DIR = Path("models")
 
 
 logging.basicConfig(
@@ -50,15 +54,15 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 XGBOOST_PARAMS = {
-    "n_estimators":      500,
-    "max_depth":         6,
-    "learning_rate":     0.05,
-    "subsample":         0.8,
-    "colsample_bytree":  0.8,
-    "eval_metric":       "mlogloss",
-    "random_state":      42,
-    "n_jobs":            2,
-    "tree_method":       "hist",
+    "n_estimators": 500,
+    "max_depth": 6,
+    "learning_rate": 0.05,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "eval_metric": "mlogloss",
+    "random_state": 42,
+    "n_jobs": 2,
+    "tree_method": "hist",
 }
 
 
@@ -66,6 +70,7 @@ VALID_BOROUGHS = {"MANHATTAN", "BROOKLYN", "QUEENS", "BRONX", "STATEN ISLAND"}
 
 
 # ── Path helpers ──────────────────────────────────────────────────────────────
+
 
 def borough_slug(borough: str | None) -> str:
     return borough.upper().replace(" ", "_") if borough else "ALL"
@@ -82,7 +87,9 @@ def meta_path(borough: str | None) -> Path:
 def model_dir(borough: str | None) -> Path:
     return MODELS_DIR / borough_slug(borough)
 
+
 # ── SMOTE ─────────────────────────────────────────────────────────────────────
+
 
 def apply_smote(
     X_train: np.ndarray,
@@ -144,21 +151,24 @@ def log_metrics(metrics: dict, severity_order: list[str]):
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+
 def run_train(
-    borough:   str | None = None,
-    cv_folds:  int = 5,
+    borough: str | None = None,
+    cv_folds: int = 5,
 ) -> XGBClassifier:
 
     if borough:
         borough = borough.upper()
         if borough not in VALID_BOROUGHS:
-            raise ValueError(f"Invalid borough '{borough}'. Choose from: {VALID_BOROUGHS}")
+            raise ValueError(
+                f"Invalid borough '{borough}'. Choose from: {VALID_BOROUGHS}"
+            )
 
     slug = borough_slug(borough)
     out_dir = model_dir(borough)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    model_path      = out_dir / "severity_model.joblib"
+    model_path = out_dir / "severity_model.joblib"
     train_meta_path = out_dir / "train_meta.json"
 
     # ── Load metadata + features ──────────────────────────────────────────────
@@ -168,8 +178,8 @@ def run_train(
         meta = json.load(f)
 
     severity_order = meta["severity_order"]
-    feature_names  = meta["encoded_feature_names"]
-    n_classes      = len(severity_order)
+    feature_names = meta["encoded_feature_names"]
+    n_classes = len(severity_order)
 
     fp = features_path(borough)
     log.info(f"Loading features from {fp}")
@@ -178,7 +188,7 @@ def run_train(
 
     # ── Build X, y ────────────────────────────────────────────────────────────
     available = [c for c in feature_names if c in df.columns]
-    missing   = set(feature_names) - set(available)
+    missing = set(feature_names) - set(available)
     if missing:
         log.warning(f"  Feature columns missing (skipped): {missing}")
 
@@ -190,7 +200,8 @@ def run_train(
 
     # ── Stratified train / test split ─────────────────────────────────────────
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
+        X,
+        y,
         test_size=0.3,
         random_state=42,
         stratify=y,
@@ -209,7 +220,9 @@ def run_train(
         objective="multi:softprob",
     )
     cv_scores = cross_val_score(
-        cv_model, X_train_res, y_train_res,
+        cv_model,
+        X_train_res,
+        y_train_res,
         cv=StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42),
         scoring="f1_macro",
         n_jobs=1,
@@ -228,20 +241,26 @@ def run_train(
         objective="multi:softprob",
     )
     model.fit(
-        X_train_res, y_train_res,
+        X_train_res,
+        y_train_res,
         eval_set=[(X_test, y_test)],
         verbose=50,
     )
 
     # ── Evaluate on real (unbalanced) test set ────────────────────────────────
-    y_pred  = model.predict(X_test)
+    y_pred = model.predict(X_test)
     metrics = {
-        "accuracy":  round(accuracy_score(y_test, y_pred), 4),
-        "precision": round(precision_score(y_test, y_pred, average="macro", zero_division=0), 4),
-        "recall":    round(recall_score(y_test, y_pred, average="macro", zero_division=0), 4),
-        "f1":        round(f1_score(y_test, y_pred, average="macro", zero_division=0), 4),
+        "accuracy": round(accuracy_score(y_test, y_pred), 4),
+        "precision": round(
+            precision_score(y_test, y_pred, average="macro", zero_division=0), 4
+        ),
+        "recall": round(
+            recall_score(y_test, y_pred, average="macro", zero_division=0), 4
+        ),
+        "f1": round(f1_score(y_test, y_pred, average="macro", zero_division=0), 4),
         "per_class": classification_report(
-            y_test, y_pred,
+            y_test,
+            y_pred,
             target_names=severity_order,
             output_dict=True,
         ),
@@ -261,17 +280,21 @@ def run_train(
     log.info(f"Saved model -> {model_path}")
 
     train_meta = {
-        "borough":             slug,
-        "trained_at":          datetime.now().isoformat(),
-        "n_train":             int(len(X_train)),
-        "n_test":              int(len(X_test)),
-        "features_used":       available,
-        "n_features":          len(available),
-        "xgboost_params":      XGBOOST_PARAMS,
-        "cv_f1_mean":          round(float(cv_scores.mean()), 4),
-        "cv_f1_std":           round(float(cv_scores.std()), 4),
-        "test_metrics":        {k: v for k, v in metrics.items() if k not in ("per_class", "confusion_matrix")},
-        "confusion_matrix":    metrics["confusion_matrix"],
+        "borough": slug,
+        "trained_at": datetime.now().isoformat(),
+        "n_train": int(len(X_train)),
+        "n_test": int(len(X_test)),
+        "features_used": available,
+        "n_features": len(available),
+        "xgboost_params": XGBOOST_PARAMS,
+        "cv_f1_mean": round(float(cv_scores.mean()), 4),
+        "cv_f1_std": round(float(cv_scores.std()), 4),
+        "test_metrics": {
+            k: v
+            for k, v in metrics.items()
+            if k not in ("per_class", "confusion_matrix")
+        },
+        "confusion_matrix": metrics["confusion_matrix"],
         "feature_importances": importances,
     }
     with open(train_meta_path, "w") as f:

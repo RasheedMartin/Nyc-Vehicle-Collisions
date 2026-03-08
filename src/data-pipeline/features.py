@@ -34,8 +34,8 @@ from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-PROCESSED_DIR      = Path("data/processed")
-INPUT_PATH         = PROCESSED_DIR / "collisions.parquet"
+PROCESSED_DIR = Path("data/processed")
+INPUT_PATH = PROCESSED_DIR / "collisions.parquet"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,14 +58,14 @@ TOP_STREETS_N = 100
 # OneHotEncoder: borough=BROOKLYN gets its own binary column,
 # completely independent of borough=MANHATTAN
 NOMINAL_FEATURES = [
-    "on_street_name",   # location feature: top-N streets + "Other"
+    "on_street_name",  # location feature: top-N streets + "Other"
 ]
 
 # Ordered categoricals — a real sequence exists between values
 # OrdinalEncoder: model can learn that Evening Rush > Midday numerically
 ORDERED_FEATURES = {
     "time_of_day": ["Late Night", "Morning Rush", "Midday", "Evening Rush", "Night"],
-    "season":      ["Winter", "Spring", "Summer", "Fall"],
+    "season": ["Winter", "Spring", "Summer", "Fall"],
 }
 
 # Numeric — passed through as-is, no encoding needed
@@ -77,30 +77,34 @@ NUMERIC_FEATURES = [
 ]
 
 # Target
-TARGET_COL     = "accident_severity"
+TARGET_COL = "accident_severity"
 SEVERITY_ORDER = ["No Injury", "Minor Injury", "Major Injury", "Fatal"]
-SEVERITY_MAP   = {label: i for i, label in enumerate(SEVERITY_ORDER)}
+SEVERITY_MAP = {label: i for i, label in enumerate(SEVERITY_ORDER)}
 VALID_BOROUGHS = {"MANHATTAN", "BROOKLYN", "QUEENS", "BRONX", "STATEN ISLAND"}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def output_dir(borough: str | None) -> Path:
     """Borough-namespaced output directory."""
     slug = borough.upper().replace(" ", "_") if borough else "ALL"
     return PROCESSED_DIR / slug
 
+
 def select_available(df: pl.DataFrame, cols: list[str], label: str) -> list[str]:
     available = [c for c in cols if c in df.columns]
-    missing   = set(cols) - set(available)
+    missing = set(cols) - set(available)
     if missing:
         log.warning(f"  {label} — columns not found (skipped): {missing}")
     return available
 
 
-def fill_nulls(df: pl.DataFrame, cat_cols: list[str], num_cols: list[str]) -> pl.DataFrame:
+def fill_nulls(
+    df: pl.DataFrame, cat_cols: list[str], num_cols: list[str]
+) -> pl.DataFrame:
     cat_exprs = [pl.col(c).fill_null("Unknown") for c in cat_cols if c in df.columns]
-    num_exprs = [pl.col(c).fill_null(0)         for c in num_cols if c in df.columns]
+    num_exprs = [pl.col(c).fill_null(0) for c in num_cols if c in df.columns]
     exprs = cat_exprs + num_exprs
     return df.with_columns(exprs) if exprs else df
 
@@ -111,29 +115,28 @@ def cap_street_names(df: pl.DataFrame, n: int = TOP_STREETS_N) -> pl.DataFrame:
     Keeps OHE cardinality manageable while preserving the highest-signal corridors.
     Null / blank street names are left as-is (fill_nulls handles them downstream).
     """
-    df = df.with_columns(
-        pl.col("on_street_name").str.to_uppercase().str.strip_chars()
-    )
+    df = df.with_columns(pl.col("on_street_name").str.to_uppercase().str.strip_chars())
     top = (
-        df.filter(pl.col("on_street_name").is_not_null() & (pl.col("on_street_name") != ""))
-          .group_by("on_street_name").len()
-          .sort("len", descending=True).head(n)
-          ["on_street_name"].to_list()
+        df.filter(
+            pl.col("on_street_name").is_not_null() & (pl.col("on_street_name") != "")
+        )
+        .group_by("on_street_name")
+        .len()
+        .sort("len", descending=True)
+        .head(n)["on_street_name"]
+        .to_list()
     )
     return df.with_columns(
         pl.when(pl.col("on_street_name").is_in(top))
-          .then(pl.col("on_street_name"))
-          .otherwise(pl.lit("Other"))
-          .alias("on_street_name")
+        .then(pl.col("on_street_name"))
+        .otherwise(pl.lit("Other"))
+        .alias("on_street_name")
     )
 
 
 def encode_target(df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns(
-        pl.col(TARGET_COL)
-          .replace(SEVERITY_MAP)
-          .cast(pl.Int8)
-          .alias("severity_encoded")
+        pl.col(TARGET_COL).replace(SEVERITY_MAP).cast(pl.Int8).alias("severity_encoded")
     )
 
 
@@ -154,6 +157,7 @@ def build_category_catalogue(df: pl.DataFrame, nominal_cols: list[str]) -> dict:
 
 
 # ── Build preprocessor ────────────────────────────────────────────────────────
+
 
 def build_preprocessor(
     nominal_cols: list[str],
@@ -177,35 +181,41 @@ def build_preprocessor(
     transformers = []
 
     if nominal_cols:
-        transformers.append((
-            "nominal",
-            OneHotEncoder(
-                handle_unknown="ignore",
-                sparse_output=False,
-                dtype=np.float32,
-            ),
-            nominal_cols,
-        ))
+        transformers.append(
+            (
+                "nominal",
+                OneHotEncoder(
+                    handle_unknown="ignore",
+                    sparse_output=False,
+                    dtype=np.float32,
+                ),
+                nominal_cols,
+            )
+        )
 
     if ordered_cols:
         categories = [ordered_categories[c] for c in ordered_cols]
-        transformers.append((
-            "ordered",
-            OrdinalEncoder(
-                categories=categories,
-                handle_unknown="use_encoded_value",
-                unknown_value=-1,
-                dtype=np.float32,
-            ),
-            ordered_cols,
-        ))
+        transformers.append(
+            (
+                "ordered",
+                OrdinalEncoder(
+                    categories=categories,
+                    handle_unknown="use_encoded_value",
+                    unknown_value=-1,
+                    dtype=np.float32,
+                ),
+                ordered_cols,
+            )
+        )
 
     if numeric_cols:
-        transformers.append((
-            "numeric",
-            "passthrough",
-            numeric_cols,
-        ))
+        transformers.append(
+            (
+                "numeric",
+                "passthrough",
+                numeric_cols,
+            )
+        )
 
     return ColumnTransformer(transformers=transformers, remainder="drop")
 
@@ -225,20 +235,22 @@ def get_feature_names(preprocessor: ColumnTransformer) -> list[str]:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+
 def run_features(
-        borough: str | None = None,
-        input_path: Path = INPUT_PATH
+    borough: str | None = None, input_path: Path = INPUT_PATH
 ) -> tuple[np.ndarray, np.ndarray, list[str]]:
-    
+
     log.info(f"Loading {input_path}")
     df = pl.read_parquet(input_path)
     log.info(f"  {len(df):,} rows, {len(df.columns)} columns")
 
-# ── Borough filter ────────────────────────────────────────────────────────
+    # ── Borough filter ────────────────────────────────────────────────────────
     if borough:
         borough = borough.upper()
         if borough not in VALID_BOROUGHS:
-            raise ValueError(f"Invalid borough '{borough}'. Choose from: {VALID_BOROUGHS}")
+            raise ValueError(
+                f"Invalid borough '{borough}'. Choose from: {VALID_BOROUGHS}"
+            )
         df = df.filter(pl.col("borough") == borough)
         log.info(f"  Filtered to {borough}: {len(df):,} rows")
         # Borough is now constant — exclude it; street name carries the location signal
@@ -292,10 +304,12 @@ def run_features(
     )
 
     # Convert to pandas for sklearn
-    pdf = df.select(all_input_cols + [TARGET_COL, "severity_encoded", "collision_id"]).to_pandas()
+    pdf = df.select(
+        all_input_cols + [TARGET_COL, "severity_encoded", "collision_id"]
+    ).to_pandas()
 
     X_raw = pdf[all_input_cols]
-    y     = pdf["severity_encoded"].to_numpy().astype(np.int8)
+    y = pdf["severity_encoded"].to_numpy().astype(np.int8)
 
     # Build, fit, apply preprocessor
     preprocessor = build_preprocessor(
@@ -313,15 +327,18 @@ def run_features(
     out_dir = output_dir(borough)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    features_path     = out_dir / "features.parquet"
+    features_path = out_dir / "features.parquet"
     preprocessor_path = out_dir / "preprocessor.joblib"
-    meta_path         = out_dir / "feature_meta.json"
+    meta_path = out_dir / "feature_meta.json"
 
     features_df = pl.DataFrame(X, schema=feature_names)
-    features_df = pl.concat([
-        features_df,
-        pl.from_pandas(pdf[["collision_id", TARGET_COL, "severity_encoded"]]),
-    ], how="horizontal")
+    features_df = pl.concat(
+        [
+            features_df,
+            pl.from_pandas(pdf[["collision_id", TARGET_COL, "severity_encoded"]]),
+        ],
+        how="horizontal",
+    )
     features_df.write_parquet(features_path, compression="snappy")
     log.info(f"Saved features -> {features_path}")
 
@@ -330,17 +347,17 @@ def run_features(
 
     catalogue = build_category_catalogue(df, nominal_cols)
     meta = {
-        "borough":               borough or "ALL",
-        "nominal_features":      nominal_cols,
-        "ordered_features":      ordered_cols,
-        "ordered_categories":    ORDERED_FEATURES,
-        "numeric_features":      numeric_cols,
+        "borough": borough or "ALL",
+        "nominal_features": nominal_cols,
+        "ordered_features": ordered_cols,
+        "ordered_categories": ORDERED_FEATURES,
+        "numeric_features": numeric_cols,
         "encoded_feature_names": feature_names,
-        "target_col":            TARGET_COL,
-        "severity_order":        SEVERITY_ORDER,
-        "severity_map":          SEVERITY_MAP,
-        "severity_inverse":      {str(v): k for k, v in SEVERITY_MAP.items()},
-        "category_catalogue":    catalogue,
+        "target_col": TARGET_COL,
+        "severity_order": SEVERITY_ORDER,
+        "severity_map": SEVERITY_MAP,
+        "severity_inverse": {str(v): k for k, v in SEVERITY_MAP.items()},
+        "category_catalogue": catalogue,
     }
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
@@ -351,7 +368,9 @@ def run_features(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Build feature matrix for model training")
+    parser = argparse.ArgumentParser(
+        description="Build feature matrix for model training"
+    )
     parser.add_argument(
         "--borough",
         type=str,
