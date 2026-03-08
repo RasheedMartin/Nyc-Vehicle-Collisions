@@ -150,10 +150,11 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+origins = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten to your Railway Streamlit URL in production
+    allow_origins=origins,
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
