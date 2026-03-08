@@ -157,7 +157,6 @@ def _download_parquet(client) -> None:
     bucket = os.environ.get("R2_BUCKET_NAME", "nyc-collisions")
     VOLUME_DIR.mkdir(parents=True, exist_ok=True)
     log.info(f"Downloading {R2_PARQUET_KEY} → {DATA_PATH}")
-    st.toast("Refreshing data from R2…", icon="⬇️")
     client.download_file(bucket, R2_PARQUET_KEY, str(DATA_PATH))
     log.info(f"Download complete: {DATA_PATH.stat().st_size:,} bytes")
 
