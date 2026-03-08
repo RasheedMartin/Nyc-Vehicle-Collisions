@@ -1,14 +1,39 @@
 """
 main.py — Queens Vehicle Collision Dashboard
 Run with: streamlit run app/main.py
+
+Data strategy:
+  - Parquet is cached on a Railway Volume (/data) and shared across all users.
+  - On startup, we check R2's Last-Modified timestamp against the local file.
+    If R2 is newer (i.e. Airflow has run a fresh pipeline), we re-download.
+  - Model/preprocessor are NOT loaded here — all inference goes through the API.
+  - train_meta and feature_meta are fetched from the API's /meta endpoint.
 """
 
+from __future__ import annotations
+
+import io
 import json
-import joblib
-import streamlit as st
-import polars as pl
-from pathlib import Path
+import logging
 import os
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import boto3
+import polars as pl
+import streamlit as st
+from botocore.config import Config
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger(__name__)
 
 st.set_page_config(
     page_title="Queens Collision Intelligence",
@@ -19,24 +44,22 @@ st.set_page_config(
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
-ROOT = Path(__file__).parent.parent
-PROCESSED_DIR = ROOT / "data" / "processed" / "QUEENS"
-MODELS_DIR = ROOT / "models" / "QUEENS"
+# Railway Volume mount path (set RAILWAY_VOLUME_MOUNT_PATH=/data in Railway env)
+VOLUME_DIR = Path(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/data"))
+DATA_PATH = VOLUME_DIR / "collisions_queens.parquet"
 
-DATA_PATH = PROCESSED_DIR / "collisions_queens.parquet"
-FEATURE_META_PATH = PROCESSED_DIR / "feature_meta.json"
-TRAIN_META_PATH = MODELS_DIR / "train_meta.json"
-MODEL_PATH = MODELS_DIR / "severity_model.joblib"
-PREPROCESSOR_PATH = PROCESSED_DIR / "preprocessor.joblib"
+# R2 key for the parquet
+R2_PARQUET_KEY = "processed/QUEENS/collisions_queens.parquet"
 
-# ── R2 artifact loader ────────────────────────────────────────────────────────
+# How old (in seconds) the local file can be before we check R2 for a newer version.
+# Default: 6 days — slightly less than the weekly pipeline schedule.
+CACHE_TTL_SECONDS = int(os.environ.get("PARQUET_CACHE_TTL", 6 * 24 * 3600))
+
+
+# ── R2 client ─────────────────────────────────────────────────────────────────
 
 
 def _r2_client():
-    """Build a boto3 S3 client pointed at Cloudflare R2."""
-    import boto3
-    from botocore.config import Config
-
     account_id = os.environ["R2_ACCOUNT_ID"]
     return boto3.client(
         "s3",
@@ -48,106 +71,175 @@ def _r2_client():
     )
 
 
-def _pull_from_r2(r2_key: str, local_path: Path) -> None:
-    """Download a single artifact from R2 to local_path if not already present."""
-    if local_path.exists():
-        print(f"[artifacts] already exists: {local_path.name}", flush=True)
-        return
+# ── Volume cache with R2 TTL check ────────────────────────────────────────────
+
+
+def _local_mtime() -> datetime | None:
+    """Return the local file's mtime as a timezone-aware UTC datetime, or None."""
+    if not DATA_PATH.exists():
+        return None
+    ts = DATA_PATH.stat().st_mtime
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
+def _r2_last_fetch_date(client) -> datetime | None:
+    """
+    Read last_fetch_date from raw/.last_fetch.json in R2.
+    This is written by fetch.py after every successful Airflow run,
+    so it reflects when new data was actually pulled from NYC Open Data.
+    """
     bucket = os.environ.get("R2_BUCKET_NAME", "nyc-collisions")
-    local_path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"[artifacts] downloading {r2_key} → {local_path}", flush=True)
-    st.toast(f"Downloading {local_path.name} from R2…", icon="⬇️")
     try:
-        _r2_client().download_file(bucket, r2_key, str(local_path))
-        print(
-            f"[artifacts] done: {local_path.name} ({local_path.stat().st_size:,} bytes)",
-            flush=True,
+        resp = client.get_object(Bucket=bucket, Key="raw/.last_fetch.json")
+        meta = json.loads(resp["Body"].read().decode())
+        return datetime.fromisoformat(meta["last_fetch_date"]).replace(
+            tzinfo=timezone.utc
         )
     except Exception as e:
-        print(f"[artifacts] FAILED {r2_key}: {e}", flush=True)
-        raise
+        log.warning(f"Could not read .last_fetch.json from R2: {e}")
+        return None
 
 
-def _ensure_artifacts() -> None:
-    """Pull all required artifacts from R2 if running in cloud (no local files)."""
-    # Skip if all files already exist locally (local dev)
-    if all(
-        p.exists()
-        for p in [
-            DATA_PATH,
-            MODEL_PATH,
-            PREPROCESSOR_PATH,
-            FEATURE_META_PATH,
-            TRAIN_META_PATH,
-        ]
-    ):
-        return
+def _needs_refresh(client) -> bool:
+    """
+    Return True if we should re-download the parquet from R2.
 
-    # Only attempt R2 pull if credentials are present
+    Rules:
+      1. File doesn't exist locally → always download.
+      2. File age is within CACHE_TTL_SECONDS → use cache, skip all R2 checks.
+      3. File is past TTL → read raw/.last_fetch.json from R2 (tiny request).
+         If Airflow has fetched new data since the parquet was last downloaded
+         → re-download. Otherwise keep serving the cached file.
+    """
+    local_mtime = _local_mtime()
+
+    # Rule 1 — no local file
+    if local_mtime is None:
+        log.info("No local parquet found — downloading from R2")
+        return True
+
+    age_seconds = time.time() - local_mtime.timestamp()
+
+    # Rule 2 — within TTL, don't even hit R2
+    if age_seconds < CACHE_TTL_SECONDS:
+        log.info(
+            f"Local parquet is {age_seconds / 3600:.1f}h old — within TTL, using cache"
+        )
+        return False
+
+    # Rule 3 — past TTL, check .last_fetch.json
+    log.info(
+        f"Local parquet is {age_seconds / 3600:.1f}h old — checking .last_fetch.json"
+    )
+    last_fetch = _r2_last_fetch_date(client)
+
+    if last_fetch is None:
+        # Can't read metadata — serve stale file rather than failing
+        log.warning("Could not read last_fetch.json — serving existing cache")
+        return False
+
+    if last_fetch > local_mtime:
+        log.info(
+            f"Airflow fetched new data at {last_fetch.isoformat()} "
+            f"(parquet last downloaded {local_mtime.isoformat()}) — refreshing"
+        )
+        return True
+
+    log.info(
+        f"No new data since last download "
+        f"(last fetch: {last_fetch.isoformat()}) — using cache"
+    )
+    return False
+
+
+def _download_parquet(client) -> None:
+    """Download the parquet from R2 to the Volume path."""
+    bucket = os.environ.get("R2_BUCKET_NAME", "nyc-collisions")
+    VOLUME_DIR.mkdir(parents=True, exist_ok=True)
+    log.info(f"Downloading {R2_PARQUET_KEY} → {DATA_PATH}")
+    st.toast("Refreshing data from R2…", icon="⬇️")
+    client.download_file(bucket, R2_PARQUET_KEY, str(DATA_PATH))
+    log.info(f"Download complete: {DATA_PATH.stat().st_size:,} bytes")
+
+
+def _ensure_parquet() -> None:
+    """Download or refresh the parquet on the Volume if needed."""
     if not os.environ.get("R2_ACCOUNT_ID"):
         st.error(
-            "Artifact files not found locally and R2 credentials are not set. "
-            "Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME "
-            "as environment variables.",
+            "R2 credentials not set. Please set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, "
+            "R2_SECRET_ACCESS_KEY, and R2_BUCKET_NAME as environment variables.",
             icon="🚨",
         )
         st.stop()
 
-    artifacts = [
-        ("processed/QUEENS/collisions_queens.parquet", DATA_PATH),
-        ("processed/QUEENS/feature_meta.json", FEATURE_META_PATH),
-        ("processed/QUEENS/preprocessor.joblib", PREPROCESSOR_PATH),
-        ("models/QUEENS/severity_model.joblib", MODEL_PATH),
-        ("models/QUEENS/train_meta.json", TRAIN_META_PATH),
-    ]
-    for r2_key, local_path in artifacts:
-        _pull_from_r2(r2_key, local_path)
-
-
-# Pull artifacts before anything else runs
-print("[startup] checking artifacts…", flush=True)
-_ensure_artifacts()
-print("[startup] artifacts ready", flush=True)
+    client = _r2_client()
+    if _needs_refresh(client):
+        _download_parquet(client)
 
 
 # ── Loaders ───────────────────────────────────────────────────────────────────
 
 
-@st.cache_data
+@st.cache_data(show_spinner="Loading collision data…")
 def load_data() -> pl.DataFrame:
-    if not DATA_PATH.exists():
-        full_path = ROOT / "data" / "processed" / "collisions.parquet"
-        print("[load_data] reading full parquet and filtering to QUEENS…", flush=True)
-        df = pl.read_parquet(full_path).filter(pl.col("borough") == "QUEENS")
-        print(f"[load_data] done: {len(df):,} rows", flush=True)
-        return df
-    print(f"[load_data] reading {DATA_PATH}…", flush=True)
+    """
+    Load the Queens collision parquet from the Railway Volume.
+    Cached for the lifetime of the Streamlit process — all users share this.
+    """
+    _ensure_parquet()
+    log.info(f"Reading parquet from {DATA_PATH}")
     df = pl.read_parquet(DATA_PATH)
-    print(f"[load_data] done: {len(df):,} rows", flush=True)
+    log.info(f"Loaded {len(df):,} rows")
     return df
 
 
-@st.cache_data
-def load_feature_meta() -> dict:
-    with open(FEATURE_META_PATH) as f:
-        return json.load(f)
-
-
-@st.cache_data
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_train_meta() -> dict:
-    with open(TRAIN_META_PATH) as f:
-        return json.load(f)
+    """
+    Fetch train metadata from the inference API's /meta endpoint.
+    Cached for 1 hour — used by 6_pipeline.py.
+    """
+    import requests
+
+    api_url = os.environ.get("INFERENCE_API_URL", "http://localhost:8000").rstrip("/")
+    api_key = os.environ.get("API_KEY", "")
+    headers = {"X-API-Key": api_key} if api_key else {}
+
+    try:
+        resp = requests.get(f"{api_url}/meta", headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        # Return in the shape the pipeline page expects
+        return {
+            "test_metrics": data["test_metrics"],
+            "cv_f1_mean": data["cv_f1_mean"],
+            "cv_f1_std": data["cv_f1_std"],
+            "n_train": data["n_train"],
+            "n_test": data["n_test"],
+            "trained_at": data["trained_at"],
+            "feature_importances": data["feature_importances"],
+            "n_features": len(data["feature_importances"]),
+            # xgboost_params not in /meta — add to API if needed
+            "xgboost_params": {},
+            "borough": "QUEENS",
+        }
+    except Exception as e:
+        log.warning(f"Could not fetch train meta from API: {e}")
+        return {
+            "test_metrics": {"accuracy": 0, "precision": 0, "recall": 0, "f1": 0},
+            "cv_f1_mean": 0,
+            "cv_f1_std": 0,
+            "n_train": 0,
+            "n_test": 0,
+            "trained_at": "—",
+            "feature_importances": {},
+            "n_features": 0,
+            "xgboost_params": {},
+            "borough": "QUEENS",
+        }
 
 
-@st.cache_resource
-def load_model():
-    return joblib.load(MODEL_PATH)
-
-
-@st.cache_resource
-def load_preprocessor():
-    return joblib.load(PREPROCESSOR_PATH)
-
+# ── Navigation ────────────────────────────────────────────────────────────────
 
 pages_dir = Path(__file__).parent / "pages"
 
