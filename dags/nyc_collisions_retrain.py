@@ -19,18 +19,22 @@ All scripts run as subprocesses inside the mounted project directory
 
 from __future__ import annotations
 
-import subprocess
+import json
 import logging
+import os
+import subprocess
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from airflow import DAG
-from airflow.operators.python import PythonOperator
-from airflow.models import Variable
-
-import os
 import requests
+from pendulum import timezone as pendulum_tz
+
+from airflow import DAG
+from airflow.models import Variable
+from airflow.operators.python import PythonOperator, ShortCircuitOperator
+from airflow.operators.email import EmailOperator
+from airflow.providers.http.sensors.http import HttpSensor
 
 log = logging.getLogger(__name__)
 
@@ -46,14 +50,64 @@ if not PYTHON_BIN.exists():
 BOROUGH = "QUEENS"
 
 DEFAULT_ARGS = {
-    "owner":            "rasheedmartin",
-    "retries":          2,
-    "retry_delay":      timedelta(minutes=5),
+    "owner":                     "rasheedmartin",
+    "retries":                   2,
+    "retry_delay":               timedelta(minutes=5),
     "retry_exponential_backoff": True,
-    "execution_timeout": timedelta(hours=2),
-    "email_on_failure": False,
-    "email_on_retry":   False,
+    "execution_timeout":         timedelta(hours=2),
+    "email_on_failure":          False,   # handled by on_failure_callback below
+    "email_on_retry":            False,
 }
+
+NOTIFY_EMAIL = Variable.get("AIRFLOW_EMAIL")
+# ── Email callbacks ───────────────────────────────────────────────────────────
+
+def _notify_success(context) -> None:
+    """Send a success email when the full pipeline completes."""
+    if not NOTIFY_EMAIL:
+        return
+    dag_run   = context["dag_run"]
+    run_id    = dag_run.run_id
+    exec_date = context["ds"]
+    send_email(
+        to=NOTIFY_EMAIL,
+        subject=f"✅ nyc_collisions_retrain succeeded — {exec_date}",
+        html_content=f"""
+        <h3>Pipeline completed successfully</h3>
+        <table style="font-family:monospace;font-size:13px;">
+          <tr><td><b>DAG</b></td><td>nyc_collisions_retrain</td></tr>
+          <tr><td><b>Run ID</b></td><td>{run_id}</td></tr>
+          <tr><td><b>Date</b></td><td>{exec_date}</td></tr>
+          <tr><td><b>Borough</b></td><td>{BOROUGH}</td></tr>
+        </table>
+        <p>Model artifacts uploaded to R2 and Railway redeploy triggered.</p>
+        """,
+    )
+
+
+def _notify_failure(context) -> None:
+    """Send a failure email on any task failure."""
+    if not NOTIFY_EMAIL:
+        return
+    from airflow.utils.email import send_email
+    task_instance = context["task_instance"]
+    exec_date     = context["ds"]
+    exception     = context.get("exception", "Unknown error")
+    send_email(
+        to=NOTIFY_EMAIL,
+        subject=f"❌ nyc_collisions_retrain FAILED — {exec_date}",
+        html_content=f"""
+        <h3>Pipeline task failed</h3>
+        <table style="font-family:monospace;font-size:13px;">
+          <tr><td><b>DAG</b></td><td>nyc_collisions_retrain</td></tr>
+          <tr><td><b>Task</b></td><td>{task_instance.task_id}</td></tr>
+          <tr><td><b>Date</b></td><td>{exec_date}</td></tr>
+          <tr><td><b>Error</b></td><td><pre>{str(exception)[:1000]}</pre></td></tr>
+        </table>
+        <p>Check the Airflow UI for full logs.</p>
+        """,
+    )
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -225,7 +279,7 @@ with DAG(
     description="Incremental fetch + retrain for Queens collision severity model",
     default_args=DEFAULT_ARGS,
     schedule="0 6 * * 1",          # every Monday at 6am
-    start_date=datetime(2025, 1, 1),
+    start_date=datetime(2025, 1, 1, tzinfo=pendulum_tz("America/New_York")),
     catchup=False,                  # don't backfill missed runs
     max_active_runs=1,              # never run two pipelines simultaneously
     tags=["nyc", "collisions", "queens", "ml"],
@@ -235,6 +289,17 @@ with DAG(
         task_id="fetch",
         python_callable=task_fetch,
         doc_md="Pull new crash + person records from Socrata (incremental).",
+    )
+
+    check_new_data = ShortCircuitOperator(
+        task_id="check_new_data",
+        python_callable=task_has_new_data,
+        doc_md="""
+        Gate task — reads `raw/.last_fetch.json` from R2 to confirm fetch.py
+        actually pulled new records for this execution date. Returns False
+        (skipping all downstream tasks) if NYPD has not pushed new data since
+        the last run. Prevents unnecessary compute on no-op weeks.
+        """,
     )
 
     clean = PythonOperator(
@@ -261,18 +326,58 @@ with DAG(
         doc_md="Upload artifacts to Cloudflare R2.",
     )
 
+    wait_for_api = HttpSensor(
+        task_id="wait_for_api",
+        http_conn_id="inference_api",  
+        endpoint="/health",
+        method="GET",
+        response_check=lambda resp: resp.status_code == 200,
+        poke_interval=30,               # check every 30 seconds
+        timeout=300,                    # give up after 5 minutes
+        mode="poke",
+        doc_md="""
+        Sensor — waits for the FastAPI inference service to return HTTP 200
+        on GET /health before attempting the model hot-swap. Prevents
+        reload_api from hitting a cold-starting or redeploying instance.
+        Requires an Airflow Connection named 'inference_api'.
+        """,
+    )
+
+    reload_api = PythonOperator(
+        task_id="reload_api",
+        python_callable=task_reload_api,
+        doc_md="""
+        Hot-swap the XGBoost model and preprocessor on the live FastAPI
+        inference service by calling POST /reload. Runs immediately after
+        upload_r2 so predictions are served from the new model without
+        waiting for Railway's full redeploy cycle (~2–3 min).
+        """,
+    )
+
     redeploy_railway = PythonOperator(
         task_id="redeploy_railway",
         python_callable=task_redeploy_railway,
-        doc_md="Trigger GitHub Actions workflow_dispatch → Railway CLI redeploy → app serves the new model.",
+        doc_md="Trigger GitHub Actions workflow_dispatch → Railway CLI redeploy → app serves new artifacts.",
     )
 
-    reload_task = PythonOperator(
-    task_id="reload_api",
-    python_callable=reload_api,
-    doc_md="Hot-swap the XGBoost model and preprocessor on the live FastAPI inference service by calling POST /reload."
+    notify_success = EmailOperator(
+        task_id="notify_success",
+        to=NOTIFY_EMAIL or "rasheedjmartin@gmail.com",
+        subject="✅ nyc_collisions_retrain succeeded — {{ ds }}",
+        html_content="""
+        <h3>Pipeline completed successfully</h3>
+        <table style="font-family:monospace;font-size:13px;">
+          <tr><td><b>DAG</b></td><td>nyc_collisions_retrain</td></tr>
+          <tr><td><b>Run ID</b></td><td>{{ run_id }}</td></tr>
+          <tr><td><b>Date</b></td><td>{{ ds }}</td></tr>
+          <tr><td><b>Borough</b></td><td>QUEENS</td></tr>
+        </table>
+        <p>Model artifacts uploaded to R2 and Railway redeploy triggered.</p>
+        """,
+        doc_md="Send success email after Railway redeploy is triggered.",
     )
 
 
     # Pipeline order
-    fetch >> clean >> features >> train >> upload_r2 >> reload_task >> redeploy_railway
+    fetch >> check_new_data >> clean >> features >> train
+    train >> upload_r2 >> wait_for_api >> reload_api >> redeploy_railway >> notify_success
