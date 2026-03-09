@@ -24,17 +24,20 @@ import logging
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
-import os
-import requests
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.models import Variable
 
+import os
+import requests
+
 log = logging.getLogger(__name__)
+
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-PROJECT_DIR = Path("/opt/nyc")
+PROJECT_DIR  = Path("/opt/nyc")
 PIPELINE_DIR = PROJECT_DIR / "src" / "data-pipeline"
 PYTHON_BIN = Path("/home/airflow/.local/bin/python")
 if not PYTHON_BIN.exists():
@@ -43,17 +46,16 @@ if not PYTHON_BIN.exists():
 BOROUGH = "QUEENS"
 
 DEFAULT_ARGS = {
-    "owner": "rasheedmartin",
-    "retries": 2,
-    "retry_delay": timedelta(minutes=5),
+    "owner":            "rasheedmartin",
+    "retries":          2,
+    "retry_delay":      timedelta(minutes=5),
     "retry_exponential_backoff": True,
     "execution_timeout": timedelta(hours=2),
     "email_on_failure": False,
-    "email_on_retry": False,
+    "email_on_retry":   False,
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
 
 def run_script(script: str, *args: str) -> None:
     """
@@ -87,7 +89,6 @@ def run_script(script: str, *args: str) -> None:
 
 
 # ── Task functions ────────────────────────────────────────────────────────────
-
 
 def task_fetch(**context) -> None:
     """
@@ -126,10 +127,10 @@ def task_upload_r2(**context) -> None:
     except ImportError:
         raise RuntimeError("boto3 not installed — run: pip install boto3")
 
-    account_id = Variable.get("R2_ACCOUNT_ID")
-    access_key_id = Variable.get("R2_ACCESS_KEY_ID")
-    secret_key = Variable.get("R2_SECRET_ACCESS_KEY")
-    bucket = Variable.get("R2_BUCKET_NAME", default_var="nyc-collisions")
+    account_id       = Variable.get("R2_ACCOUNT_ID")
+    access_key_id    = Variable.get("R2_ACCESS_KEY_ID")
+    secret_key       = Variable.get("R2_SECRET_ACCESS_KEY")
+    bucket           = Variable.get("R2_BUCKET_NAME", default_var="nyc-collisions")
 
     s3 = boto3.client(
         "s3",
@@ -142,26 +143,16 @@ def task_upload_r2(**context) -> None:
 
     artifacts = [
         # (local path,                                         r2 key)
-        (
-            PROJECT_DIR / "data/processed/QUEENS/collisions_queens.parquet",
-            "processed/QUEENS/collisions_queens.parquet",
-        ),
-        (
-            PROJECT_DIR / "data/processed/QUEENS/feature_meta.json",
-            "processed/QUEENS/feature_meta.json",
-        ),
-        (
-            PROJECT_DIR / "data/processed/QUEENS/preprocessor.joblib",
-            "processed/QUEENS/preprocessor.joblib",
-        ),
-        (
-            PROJECT_DIR / "models/QUEENS/severity_model.joblib",
-            "models/QUEENS/severity_model.joblib",
-        ),
-        (
-            PROJECT_DIR / "models/QUEENS/train_meta.json",
-            "models/QUEENS/train_meta.json",
-        ),
+        (PROJECT_DIR / "data/processed/QUEENS/collisions_queens.parquet",
+         "processed/QUEENS/collisions_queens.parquet"),
+        (PROJECT_DIR / "data/processed/QUEENS/feature_meta.json",
+         "processed/QUEENS/feature_meta.json"),
+        (PROJECT_DIR / "data/processed/QUEENS/preprocessor.joblib",
+         "processed/QUEENS/preprocessor.joblib"),
+        (PROJECT_DIR / "models/QUEENS/severity_model.joblib",
+         "models/QUEENS/severity_model.joblib"),
+        (PROJECT_DIR / "models/QUEENS/train_meta.json",
+         "models/QUEENS/train_meta.json"),
     ]
 
     for local_path, r2_key in artifacts:
@@ -188,32 +179,25 @@ def task_redeploy_railway(**context) -> None:
     import json
 
     token = Variable.get("GITHUB_TOKEN")
-    repo = Variable.get(
-        "GITHUB_REPO", default_var="RasheedMartin/Nyc-Vehicle-Collisions"
-    )
-    ref = Variable.get("GITHUB_REF", default_var="main")
+    repo  = Variable.get("GITHUB_REPO", default_var="RasheedMartin/Nyc-Vehicle-Collisions")
+    ref   = Variable.get("GITHUB_REF",  default_var="main")
 
-    url = f"https://api.github.com/repos/{repo}/actions/workflows/redeploy-railway.yml/dispatches"
-    body = json.dumps(
-        {"ref": ref, "inputs": {"reason": "Model retrained by Airflow"}}
-    ).encode()
+    url  = f"https://api.github.com/repos/{repo}/actions/workflows/redeploy-railway.yml/dispatches"
+    body = json.dumps({"ref": ref, "inputs": {"reason": "Model retrained by Airflow"}}).encode()
 
     req = urllib.request.Request(
         url,
         data=body,
         headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
+            "Accept":               "application/vnd.github+json",
+            "Authorization":        f"Bearer {token}",
+            "Content-Type":         "application/json",
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         log.info("GitHub Actions triggered — HTTP %s", resp.status)
-    log.info(
-        "Railway redeploy workflow dispatched — app will redeploy with new R2 artifacts"
-    )
-
+    log.info("Railway redeploy workflow dispatched — app will redeploy with new R2 artifacts")
 
 def reload_api():
     """
@@ -228,12 +212,11 @@ def reload_api():
     variables on the Airflow worker (same block as ``R2_*`` vars in
     docker-compose.yaml).
     """
-    api_url = os.environ["INFERENCE_API_URL"].rstrip("/")
-    api_key = os.environ.get("API_KEY", "")
+    api_url = Variable.get("INFERENCE_API_URL").rstrip("/")
+    api_key = Variable.get("API_KEY", "")
     headers = {"X-API-Key": api_key} if api_key else {}
     resp = requests.post(f"{api_url}/reload", headers=headers, timeout=30)
     resp.raise_for_status()
-
 
 # ── DAG ───────────────────────────────────────────────────────────────────────
 
@@ -241,12 +224,13 @@ with DAG(
     dag_id="nyc_collisions_retrain",
     description="Incremental fetch + retrain for Queens collision severity model",
     default_args=DEFAULT_ARGS,
-    schedule="0 6 * * 1",  # every Monday at 6am
+    schedule="0 6 * * 1",          # every Monday at 6am
     start_date=datetime(2025, 1, 1),
-    catchup=False,  # don't backfill missed runs
-    max_active_runs=1,  # never run two pipelines simultaneously
+    catchup=False,                  # don't backfill missed runs
+    max_active_runs=1,              # never run two pipelines simultaneously
     tags=["nyc", "collisions", "queens", "ml"],
 ) as dag:
+
     fetch = PythonOperator(
         task_id="fetch",
         python_callable=task_fetch,
@@ -284,10 +268,11 @@ with DAG(
     )
 
     reload_task = PythonOperator(
-        task_id="reload_api",
-        python_callable=reload_api,
-        doc_md="Hot-swap the XGBoost model and preprocessor on the live FastAPI inference service by calling POST /reload.",
+    task_id="reload_api",
+    python_callable=reload_api,
+    doc_md="Hot-swap the XGBoost model and preprocessor on the live FastAPI inference service by calling POST /reload."
     )
+
 
     # Pipeline order
     fetch >> clean >> features >> train >> upload_r2 >> reload_task >> redeploy_railway
