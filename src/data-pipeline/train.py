@@ -27,7 +27,7 @@ import joblib
 import polars as pl
 import numpy as np
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from imblearn.over_sampling import SMOTE
 from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
@@ -281,7 +281,7 @@ def run_train(
 
     train_meta = {
         "borough": slug,
-        "trained_at": datetime.now().isoformat(),
+        "trained_at": datetime.now(timezone.utc).isoformat(),
         "n_train": int(len(X_train)),
         "n_test": int(len(X_test)),
         "features_used": available,
