@@ -15,7 +15,7 @@ import streamlit as st
 import polars as pl
 import plotly.graph_objects as go
 from utils import load_data
-from theme import SEVERITY_COLORS, SEVERITY_ORDER, CHART_BG, GRID_COLOR, TEXT, SUBTEXT
+from theme import SEVERITY_COLORS, CHART_BG, GRID_COLOR, TEXT, SUBTEXT
 from dotenv import load_dotenv
 
 

@@ -37,6 +37,7 @@ CACHE_TTL_SECONDS = int(os.environ.get("PARQUET_CACHE_TTL", 6 * 24 * 3600))
 
 # ── R2 client ─────────────────────────────────────────────────────────────────
 
+
 def _r2_client():
     account_id = os.environ["R2_ACCOUNT_ID"]
     return boto3.client(

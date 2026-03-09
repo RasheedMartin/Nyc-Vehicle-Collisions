@@ -353,5 +353,3 @@ fig3.update_layout(
     legend=LEGEND,
 )
 st.plotly_chart(fig3, width="stretch")
-
-
