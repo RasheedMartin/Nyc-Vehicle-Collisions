@@ -24,7 +24,8 @@ import logging
 import urllib.request
 from datetime import datetime, timedelta
 from pathlib import Path
-
+import os
+import requests
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.models import Variable
@@ -42,7 +43,7 @@ if not PYTHON_BIN.exists():
 BOROUGH = "QUEENS"
 
 DEFAULT_ARGS = {
-    "owner": "rashe",
+    "owner": "rasheedmartin",
     "retries": 2,
     "retry_delay": timedelta(minutes=5),
     "retry_exponential_backoff": True,
@@ -214,6 +215,26 @@ def task_redeploy_railway(**context) -> None:
     )
 
 
+def reload_api():
+    """
+        Hot-swap the XGBoost model and preprocessor on the live FastAPI inference
+    service by calling POST /reload.
+
+    This runs immediately after upload_r2 completes, so predictions are served
+    from the new model as soon as artifacts land in R2 — without waiting for
+    Railway's full redeploy cycle (~2–3 min).
+
+    Requires ``INFERENCE_API_URL`` and ``API_KEY`` to be set as environment
+    variables on the Airflow worker (same block as ``R2_*`` vars in
+    docker-compose.yaml).
+    """
+    api_url = os.environ["INFERENCE_API_URL"].rstrip("/")
+    api_key = os.environ.get("API_KEY", "")
+    headers = {"X-API-Key": api_key} if api_key else {}
+    resp = requests.post(f"{api_url}/reload", headers=headers, timeout=30)
+    resp.raise_for_status()
+
+
 # ── DAG ───────────────────────────────────────────────────────────────────────
 
 with DAG(
@@ -256,11 +277,17 @@ with DAG(
         doc_md="Upload artifacts to Cloudflare R2.",
     )
 
-    redeploy = PythonOperator(
+    redeploy_railway = PythonOperator(
         task_id="redeploy_railway",
         python_callable=task_redeploy_railway,
         doc_md="Trigger GitHub Actions workflow_dispatch → Railway CLI redeploy → app serves the new model.",
     )
 
+    reload_task = PythonOperator(
+        task_id="reload_api",
+        python_callable=reload_api,
+        doc_md="Hot-swap the XGBoost model and preprocessor on the live FastAPI inference service by calling POST /reload.",
+    )
+
     # Pipeline order
-    fetch >> clean >> features >> train >> upload_r2 >> redeploy
+    fetch >> clean >> features >> train >> upload_r2 >> reload_task >> redeploy_railway

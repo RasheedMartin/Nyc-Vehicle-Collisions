@@ -315,7 +315,7 @@ if "on_street_name" in df.columns:
     with col1:
         st.subheader("Top 5 Corridors by Severe Crashes")
         st.caption(
-            f"Fatal + Major Injury only · % = each street\'s share of all severe crashes in Queens "
+            f"Fatal + Major Injury only · % = each street's share of all severe crashes in Queens "
             f"(adds up to {pct_top5:.0f}%)"
         )
         for _, row in corridors.iterrows():

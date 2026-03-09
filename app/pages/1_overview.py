@@ -110,10 +110,14 @@ with col_a:
 with col_b:
     st.subheader("Crashes by Hour of Day")
     if "hour" in df.columns:
+
         def to_ampm(h: int) -> str:
-            if h == 0: return "12 AM"
-            if h < 12: return f"{h} AM"
-            if h == 12: return "12 PM"
+            if h == 0:
+                return "12 AM"
+            if h < 12:
+                return f"{h} AM"
+            if h == 12:
+                return "12 PM"
             return f"{h - 12} PM"
 
         hourly = (
@@ -122,7 +126,7 @@ with col_b:
             .len()
             .sort("hour")
         ).to_pandas()
-        
+
         hour_labels = [to_ampm(h) for h in range(24)]
 
         fig2 = go.Figure()
@@ -144,10 +148,14 @@ with col_b:
             barmode="stack",
             height=300,
             margin=dict(t=20, b=40, l=40, r=20),
-            xaxis=dict(**XAXIS, title="Hour of Day",                tickmode="array",
+            xaxis=dict(
+                **XAXIS,
+                title="Hour of Day",
+                tickmode="array",
                 tickvals=list(range(24)),
                 ticktext=hour_labels,
-                tickangle=-45),
+                tickangle=-45,
+            ),
             yaxis=dict(**YAXIS, title="Crashes"),
             legend=LEGEND,
         )

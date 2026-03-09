@@ -196,7 +196,8 @@ with col_b:
 
 if "contributing_factor_vehicle_1" in df.columns:
     top_factor = (
-        df.filter(pl.col("accident_severity") == "Fatal").filter(
+        df.filter(pl.col("accident_severity") == "Fatal")
+        .filter(
             pl.col("contributing_factor_vehicle_1").is_not_null()
             & (pl.col("contributing_factor_vehicle_1") != "Unspecified")
         )
@@ -233,15 +234,13 @@ st.markdown("<hr style='border-color:#1f1f30;margin:1.5rem 0'>", unsafe_allow_ht
 st.markdown("#### Vulnerable Road Users — Pedestrians & Cyclists")
 
 if "person_type" in df.columns:
-
     VULN = ["Pedestrian", "Bicyclist"]
     SEVERE = ["Fatal", "Major Injury"]
 
     # Pre-compute stats used by both charts and the callout
     vuln_fatal = len(
         df.filter(
-            (pl.col("accident_severity") == "Fatal")
-            & pl.col("person_type").is_in(VULN)
+            (pl.col("accident_severity") == "Fatal") & pl.col("person_type").is_in(VULN)
         )
     )
     total_fatal = len(df.filter(pl.col("accident_severity") == "Fatal"))
@@ -260,7 +259,9 @@ if "person_type" in df.columns:
     # ── Right: fatal crashes by victim type — donut showing vuln share ────────
     fatal_by_type = (
         df.filter(pl.col("accident_severity") == "Fatal")
-        .filter(pl.col("person_type").is_not_null() & (pl.col("person_type") != "Unknown"))
+        .filter(
+            pl.col("person_type").is_not_null() & (pl.col("person_type") != "Unknown")
+        )
         .with_columns(
             pl.when(pl.col("person_type").is_in(VULN))
             .then(pl.col("person_type"))
@@ -283,7 +284,7 @@ if "person_type" in df.columns:
         st.markdown(
             "<div style=\"font-family:'DM Mono',monospace;font-size:0.65rem;"
             "letter-spacing:0.12em;text-transform:uppercase;color:#6b6880;"
-            "margin-bottom:0.5rem;\">Pedestrian & Cyclist — Fatal vs Major Injury</div>",
+            'margin-bottom:0.5rem;">Pedestrian & Cyclist — Fatal vs Major Injury</div>',
             unsafe_allow_html=True,
         )
         fig_vuln = go.Figure()
@@ -316,7 +317,7 @@ if "person_type" in df.columns:
         st.markdown(
             "<div style=\"font-family:'DM Mono',monospace;font-size:0.65rem;"
             "letter-spacing:0.12em;text-transform:uppercase;color:#6b6880;"
-            "margin-bottom:0.5rem;\">Share of All Fatal Crashes by Victim Type</div>",
+            'margin-bottom:0.5rem;">Share of All Fatal Crashes by Victim Type</div>',
             unsafe_allow_html=True,
         )
         fig_donut = go.Figure(
@@ -342,7 +343,8 @@ if "person_type" in df.columns:
             annotations=[
                 dict(
                     text=f"<b style='font-size:1.1rem'>{vuln_pct:.0f}%</b><br><span style='font-size:0.7rem'>pedestrian<br>or cyclist</span>",
-                    x=0.5, y=0.5,
+                    x=0.5,
+                    y=0.5,
                     font=dict(family="DM Mono", size=12, color="#ef4444"),
                     showarrow=False,
                 )
@@ -376,4 +378,3 @@ if "person_type" in df.columns:
     """,
         unsafe_allow_html=True,
     )
-

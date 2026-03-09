@@ -300,7 +300,6 @@ class SocrataClient:
             # a partial payload that parses as JSONDecodeError.
             MAX_ATTEMPTS = 6
             BASE_TIMEOUT = 120
-            last_exc = None
             batch = None
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 wait = 2**attempt  # 2, 4, 8, 16, 32, 64 seconds
@@ -329,7 +328,6 @@ class SocrataClient:
                     time.sleep(wait)
 
                 except Exception as e:
-                    last_exc = e
                     if attempt == MAX_ATTEMPTS:
                         raise
                     log.warning(
