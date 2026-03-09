@@ -19,7 +19,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 import streamlit as st
 import polars as pl
 import pydeck as pdk
-from main import load_data
+from utils import load_data
 from theme import SEVERITY_ORDER, HEATMAP_COLOR_RANGE
 
 df = load_data()

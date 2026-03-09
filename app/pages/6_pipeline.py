@@ -8,7 +8,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 import streamlit as st
 import polars as pl
 from datetime import datetime
-from main import load_data, load_train_meta
+from utils import load_data, load_train_meta
 
 train_meta = load_train_meta()
 _year_list = load_data()["year"].drop_nulls().cast(pl.Int32).unique().sort().to_list()
