@@ -21,10 +21,9 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -35,13 +34,14 @@ from airflow.models import Variable
 from airflow.operators.python import PythonOperator, ShortCircuitOperator
 from airflow.operators.email import EmailOperator
 from airflow.providers.http.sensors.http import HttpSensor
+from airflow.utils.email import send_email
 
 log = logging.getLogger(__name__)
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-PROJECT_DIR  = Path("/opt/nyc")
+PROJECT_DIR = Path("/opt/nyc")
 PIPELINE_DIR = PROJECT_DIR / "src" / "data-pipeline"
 PYTHON_BIN = Path("/home/airflow/.local/bin/python")
 if not PYTHON_BIN.exists():
@@ -50,24 +50,25 @@ if not PYTHON_BIN.exists():
 BOROUGH = "QUEENS"
 
 DEFAULT_ARGS = {
-    "owner":                     "rasheedmartin",
-    "retries":                   2,
-    "retry_delay":               timedelta(minutes=5),
+    "owner": "rasheedmartin",
+    "retries": 2,
+    "retry_delay": timedelta(minutes=5),
     "retry_exponential_backoff": True,
-    "execution_timeout":         timedelta(hours=2),
-    "email_on_failure":          False,   # handled by on_failure_callback below
-    "email_on_retry":            False,
+    "execution_timeout": timedelta(hours=2),
+    "email_on_failure": False,  # handled by on_failure_callback below
+    "email_on_retry": False,
 }
 
 NOTIFY_EMAIL = Variable.get("AIRFLOW_EMAIL")
 # ── Email callbacks ───────────────────────────────────────────────────────────
 
+
 def _notify_success(context) -> None:
     """Send a success email when the full pipeline completes."""
     if not NOTIFY_EMAIL:
         return
-    dag_run   = context["dag_run"]
-    run_id    = dag_run.run_id
+    dag_run = context["dag_run"]
+    run_id = dag_run.run_id
     exec_date = context["ds"]
     send_email(
         to=NOTIFY_EMAIL,
@@ -90,9 +91,10 @@ def _notify_failure(context) -> None:
     if not NOTIFY_EMAIL:
         return
     from airflow.utils.email import send_email
+
     task_instance = context["task_instance"]
-    exec_date     = context["ds"]
-    exception     = context.get("exception", "Unknown error")
+    exec_date = context["ds"]
+    exception = context.get("exception", "Unknown error")
     send_email(
         to=NOTIFY_EMAIL,
         subject=f"❌ nyc_collisions_retrain FAILED — {exec_date}",
@@ -110,6 +112,7 @@ def _notify_failure(context) -> None:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def run_script(script: str, *args: str) -> None:
     """
@@ -144,6 +147,7 @@ def run_script(script: str, *args: str) -> None:
 
 # ── Task functions ────────────────────────────────────────────────────────────
 
+
 def task_fetch(**context) -> None:
     """
     Incremental fetch: pulls records added since the last successful run.
@@ -151,6 +155,7 @@ def task_fetch(**context) -> None:
     this is handled inside fetch.py itself.
     """
     run_script("fetch.py", "--mode", "incremental")
+
 
 def task_has_new_data(**context) -> bool:
     """
@@ -180,11 +185,11 @@ def task_has_new_data(**context) -> bool:
             region_name="auto",
         )
         bucket = Variable.get("R2_BUCKET_NAME", "nyc-collisions")
-        resp   = s3.get_object(Bucket=bucket, Key="raw/.last_fetch.json")
-        meta   = json.loads(resp["Body"].read().decode())
+        resp = s3.get_object(Bucket=bucket, Key="raw/.last_fetch.json")
+        meta = json.loads(resp["Body"].read().decode())
 
-        last_fetch = meta.get("last_fetch_date", "")[:10]   # YYYY-MM-DD
-        exec_date  = context["ds"]                           # YYYY-MM-DD
+        last_fetch = meta.get("last_fetch_date", "")[:10]  # YYYY-MM-DD
+        exec_date = context["ds"]  # YYYY-MM-DD
 
         if last_fetch == exec_date:
             log.info("New data confirmed for %s — proceeding with pipeline", exec_date)
@@ -192,13 +197,15 @@ def task_has_new_data(**context) -> bool:
 
         log.info(
             "No new data for %s (last_fetch_date=%s) — short-circuiting",
-            exec_date, last_fetch,
+            exec_date,
+            last_fetch,
         )
         return False
 
     except Exception as e:
         log.warning("Could not read .last_fetch.json (%s) — proceeding anyway", e)
         return True
+
 
 def task_clean(**context) -> None:
     run_script("clean.py")
@@ -228,10 +235,10 @@ def task_upload_r2(**context) -> None:
     except ImportError:
         raise RuntimeError("boto3 not installed — run: pip install boto3")
 
-    account_id       = Variable.get("R2_ACCOUNT_ID")
-    access_key_id    = Variable.get("R2_ACCESS_KEY_ID")
-    secret_key       = Variable.get("R2_SECRET_ACCESS_KEY")
-    bucket           = Variable.get("R2_BUCKET_NAME", default_var="nyc-collisions")
+    account_id = Variable.get("R2_ACCOUNT_ID")
+    access_key_id = Variable.get("R2_ACCESS_KEY_ID")
+    secret_key = Variable.get("R2_SECRET_ACCESS_KEY")
+    bucket = Variable.get("R2_BUCKET_NAME", default_var="nyc-collisions")
 
     s3 = boto3.client(
         "s3",
@@ -244,16 +251,26 @@ def task_upload_r2(**context) -> None:
 
     artifacts = [
         # (local path,                                         r2 key)
-        (PROJECT_DIR / "data/processed/QUEENS/collisions_queens.parquet",
-         "processed/QUEENS/collisions_queens.parquet"),
-        (PROJECT_DIR / "data/processed/QUEENS/feature_meta.json",
-         "processed/QUEENS/feature_meta.json"),
-        (PROJECT_DIR / "data/processed/QUEENS/preprocessor.joblib",
-         "processed/QUEENS/preprocessor.joblib"),
-        (PROJECT_DIR / "models/QUEENS/severity_model.joblib",
-         "models/QUEENS/severity_model.joblib"),
-        (PROJECT_DIR / "models/QUEENS/train_meta.json",
-         "models/QUEENS/train_meta.json"),
+        (
+            PROJECT_DIR / "data/processed/QUEENS/collisions_queens.parquet",
+            "processed/QUEENS/collisions_queens.parquet",
+        ),
+        (
+            PROJECT_DIR / "data/processed/QUEENS/feature_meta.json",
+            "processed/QUEENS/feature_meta.json",
+        ),
+        (
+            PROJECT_DIR / "data/processed/QUEENS/preprocessor.joblib",
+            "processed/QUEENS/preprocessor.joblib",
+        ),
+        (
+            PROJECT_DIR / "models/QUEENS/severity_model.joblib",
+            "models/QUEENS/severity_model.joblib",
+        ),
+        (
+            PROJECT_DIR / "models/QUEENS/train_meta.json",
+            "models/QUEENS/train_meta.json",
+        ),
     ]
 
     for local_path, r2_key in artifacts:
@@ -280,25 +297,32 @@ def task_redeploy_railway(**context) -> None:
     import json
 
     token = Variable.get("GITHUB_TOKEN")
-    repo  = Variable.get("GITHUB_REPO", default_var="RasheedMartin/Nyc-Vehicle-Collisions")
-    ref   = Variable.get("GITHUB_REF",  default_var="main")
+    repo = Variable.get(
+        "GITHUB_REPO", default_var="RasheedMartin/Nyc-Vehicle-Collisions"
+    )
+    ref = Variable.get("GITHUB_REF", default_var="main")
 
-    url  = f"https://api.github.com/repos/{repo}/actions/workflows/redeploy-railway.yml/dispatches"
-    body = json.dumps({"ref": ref, "inputs": {"reason": "Model retrained by Airflow"}}).encode()
+    url = f"https://api.github.com/repos/{repo}/actions/workflows/redeploy-railway.yml/dispatches"
+    body = json.dumps(
+        {"ref": ref, "inputs": {"reason": "Model retrained by Airflow"}}
+    ).encode()
 
     req = urllib.request.Request(
         url,
         data=body,
         headers={
-            "Accept":               "application/vnd.github+json",
-            "Authorization":        f"Bearer {token}",
-            "Content-Type":         "application/json",
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         log.info("GitHub Actions triggered — HTTP %s", resp.status)
-    log.info("Railway redeploy workflow dispatched — app will redeploy with new R2 artifacts")
+    log.info(
+        "Railway redeploy workflow dispatched — app will redeploy with new R2 artifacts"
+    )
+
 
 def task_reload_api():
     """
@@ -320,19 +344,19 @@ def task_reload_api():
     resp.raise_for_status()
     log.info("API reload successful — model hot-swapped in memory")
 
+
 # ── DAG ───────────────────────────────────────────────────────────────────────
 
 with DAG(
     dag_id="nyc_collisions_retrain",
     description="Incremental fetch + retrain for Queens collision severity model",
     default_args=DEFAULT_ARGS,
-    schedule="0 6 * * 1",          # every Monday at 6am
+    schedule="0 6 * * 1",  # every Monday at 6am
     start_date=datetime(2025, 1, 1, tzinfo=pendulum_tz("America/New_York")),
-    catchup=False,                  # don't backfill missed runs
-    max_active_runs=1,              # never run two pipelines simultaneously
+    catchup=False,  # don't backfill missed runs
+    max_active_runs=1,  # never run two pipelines simultaneously
     tags=["nyc", "collisions", "queens", "ml"],
 ) as dag:
-
     fetch = PythonOperator(
         task_id="fetch",
         python_callable=task_fetch,
@@ -376,12 +400,12 @@ with DAG(
 
     wait_for_api = HttpSensor(
         task_id="wait_for_api",
-        http_conn_id="inference_api",  
+        http_conn_id="inference_api",
         endpoint="/health",
         method="GET",
         response_check=lambda resp: resp.status_code == 200,
-        poke_interval=30,               # check every 30 seconds
-        timeout=300,                    # give up after 5 minutes
+        poke_interval=30,  # check every 30 seconds
+        timeout=300,  # give up after 5 minutes
         mode="poke",
         doc_md="""
         Sensor — waits for the FastAPI inference service to return HTTP 200
@@ -425,7 +449,13 @@ with DAG(
         doc_md="Send success email after Railway redeploy is triggered.",
     )
 
-
     # Pipeline order
     fetch >> check_new_data >> clean >> features >> train
-    train >> upload_r2 >> wait_for_api >> reload_api >> redeploy_railway >> notify_success
+    (
+        train
+        >> upload_r2
+        >> wait_for_api
+        >> reload_api
+        >> redeploy_railway
+        >> notify_success
+    )
