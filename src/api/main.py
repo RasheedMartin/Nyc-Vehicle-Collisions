@@ -218,6 +218,7 @@ class MetaResponse(BaseModel):
     severity_order: list[str]
     category_catalogue: dict
     feature_importances: dict
+    xgboost_params: dict
     test_metrics: dict
     cv_f1_mean: float
     cv_f1_std: float
@@ -255,6 +256,7 @@ def meta() -> MetaResponse:
         n_train=state.train_meta["n_train"],
         n_test=state.train_meta["n_test"],
         trained_at=state.train_meta["trained_at"],
+        xgboost_params=state.train_meta.get("xgboost_params", {}),
     )
 
 

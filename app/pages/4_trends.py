@@ -255,6 +255,43 @@ fig2.update_layout(
 )
 st.plotly_chart(fig2, width="stretch")
 
+# ── Policy callout ────────────────────────────────────────────────────────────
+
+if len(covid_years) > 0 and len(pre_covid) > 0:
+    covid_rate = covid_years["fatal_pct"].mean()
+    pre_rate = pre_covid["fatal_pct"].mean()
+    delta_pct = ((covid_rate - pre_rate) / pre_rate) * 100
+
+    st.markdown(
+        f"""
+    <div style="border-left:3px solid #7c3aed;padding:1.2rem 1.5rem;
+                background:#0f0a1a;border-radius:0 6px 6px 0;margin-top:0.5rem;">
+      <div style="font-family:'DM Mono',monospace;font-size:0.65rem;letter-spacing:0.15em;
+                  text-transform:uppercase;color:#7c3aed;margin-bottom:0.5rem;">COVID-19 Effect</div>
+      <div style="font-size:1rem;color:#e8e3f0;line-height:1.75;">
+        During 2020–2021, total crash volume in Queens dropped sharply —
+        but the fatal crash rate <strong>{"rose" if delta_pct > 0 else "fell"} {abs(delta_pct):.0f}%</strong>
+        compared to 2018–2019 ({pre_rate:.3f}% → {covid_rate:.3f}%).
+        Fewer cars, higher speeds. Vision Zero data shows the same pattern citywide:
+        emptier streets led to riskier driving behaviour, not safer outcomes.
+        <br/><br/>
+        The downward trend visible before 2020 reflects NYC's
+        <strong>Vision Zero</strong> initiative, launched in January 2014.
+        The programme reduced the citywide speed limit to 25 mph, expanded
+        automated speed cameras near schools, and redesigned dozens of dangerous
+        intersections. Queens saw measurable improvement in fatal crash rates from
+        2014 through 2019 — gains that COVID-era speeding behaviour partially reversed.
+        <span style="font-family:'DM Mono',monospace;font-size:0.7rem;color:#6b6880;
+                     display:block;margin-top:0.6rem;">
+          Source: NYC DOT Vision Zero Year 9 Report (2022) ·
+          <a href="https://www.nyc.gov/html/dot/html/pedestrians/visionzero.shtml"
+             style="color:#6b6880;" target="_blank">nyc.gov/dot/visionzero</a>
+        </span>
+      </div>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
 st.divider()
 
 # ── Year-over-year comparison ──────────────────────────────────────────────────
@@ -317,40 +354,4 @@ fig3.update_layout(
 )
 st.plotly_chart(fig3, width="stretch")
 
-# ── Policy callout ────────────────────────────────────────────────────────────
 
-if len(covid_years) > 0 and len(pre_covid) > 0:
-    covid_rate = covid_years["fatal_pct"].mean()
-    pre_rate = pre_covid["fatal_pct"].mean()
-    delta_pct = ((covid_rate - pre_rate) / pre_rate) * 100
-
-    st.markdown(
-        f"""
-    <div style="border-left:3px solid #7c3aed;padding:1.2rem 1.5rem;
-                background:#0f0a1a;border-radius:0 6px 6px 0;margin-top:0.5rem;">
-      <div style="font-family:'DM Mono',monospace;font-size:0.65rem;letter-spacing:0.15em;
-                  text-transform:uppercase;color:#7c3aed;margin-bottom:0.5rem;">COVID-19 Effect</div>
-      <div style="font-size:1rem;color:#e8e3f0;line-height:1.75;">
-        During 2020–2021, total crash volume in Queens dropped sharply —
-        but the fatal crash rate <strong>{"rose" if delta_pct > 0 else "fell"} {abs(delta_pct):.0f}%</strong>
-        compared to 2018–2019 ({pre_rate:.3f}% → {covid_rate:.3f}%).
-        Fewer cars, higher speeds. Vision Zero data shows the same pattern citywide:
-        emptier streets led to riskier driving behaviour, not safer outcomes.
-        <br/><br/>
-        The downward trend visible before 2020 reflects NYC's
-        <strong>Vision Zero</strong> initiative, launched in January 2014.
-        The programme reduced the citywide speed limit to 25 mph, expanded
-        automated speed cameras near schools, and redesigned dozens of dangerous
-        intersections. Queens saw measurable improvement in fatal crash rates from
-        2014 through 2019 — gains that COVID-era speeding behaviour partially reversed.
-        <span style="font-family:'DM Mono',monospace;font-size:0.7rem;color:#6b6880;
-                     display:block;margin-top:0.6rem;">
-          Source: NYC DOT Vision Zero Year 9 Report (2022) ·
-          <a href="https://www.nyc.gov/html/dot/html/pedestrians/visionzero.shtml"
-             style="color:#6b6880;" target="_blank">nyc.gov/dot/visionzero</a>
-        </span>
-      </div>
-    </div>
-    """,
-        unsafe_allow_html=True,
-    )

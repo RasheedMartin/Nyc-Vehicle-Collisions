@@ -305,32 +305,44 @@ if "on_street_name" in df.columns:
         .to_pandas()
     )
 
+    total_severe = len(severe)
+    top5_severe = int(corridors["total_severe"].sum())
+    pct_top5 = top5_severe / total_severe * 100 if total_severe > 0 else 0
+    corridors["share_pct"] = corridors["total_severe"] / total_severe * 100
+
     col1, col2 = st.columns([2, 1])
 
     with col1:
         st.subheader("Top 5 Corridors by Severe Crashes")
-        st.caption("Fatal + Major Injury only · computed from your dataset")
-
+        st.caption(
+            f"Fatal + Major Injury only · % = each street\'s share of all severe crashes in Queens "
+            f"(adds up to {pct_top5:.0f}%)"
+        )
         for _, row in corridors.iterrows():
-            pct = (
-                row["fatal_count"] / row["total_severe"] * 100
-                if row["total_severe"] > 0
-                else 0
-            )
+            share = row["share_pct"]
+            bar_width = min(int(share / pct_top5 * 100), 100) if pct_top5 > 0 else 0
             st.markdown(
                 f"""
-            <div style="display:flex;align-items:center;gap:1rem;
-                        padding:0.75rem 1rem;margin-bottom:0.5rem;
+            <div style="padding:0.75rem 1rem;margin-bottom:0.5rem;
                         background:#13131f;border:1px solid #1f1f30;border-radius:6px;">
-              <div style="flex:1;font-family:'DM Sans',sans-serif;
-                          font-size:0.95rem;color:#e8e3f0;">{row["street"].title()}</div>
-              <div style="font-family:'Bebas Neue',sans-serif;font-size:1.4rem;
-                          color:#ef4444;min-width:3rem;text-align:right;">
-                {int(row["total_severe"]):,}
+              <div style="display:flex;align-items:center;gap:1rem;margin-bottom:0.4rem;">
+                <div style="flex:1;font-family:'DM Sans',sans-serif;
+                            font-size:0.95rem;color:#e8e3f0;">{row["street"].title()}</div>
+                <div style="font-family:'Bebas Neue',sans-serif;font-size:1.4rem;
+                            color:#ef4444;min-width:3rem;text-align:right;">
+                  {int(row["total_severe"]):,}
+                </div>
+                <div style="font-family:'DM Mono',monospace;font-size:0.72rem;
+                            color:#ef4444;min-width:4rem;text-align:right;font-weight:600;">
+                  {share:.1f}%
+                </div>
               </div>
-              <div style="font-family:'DM Mono',monospace;font-size:0.65rem;
-                          color:#6b6880;min-width:5rem;text-align:right;">
-                {int(row["fatal_count"])} fatal ({pct:.0f}%)
+              <div style="background:#1f1f30;border-radius:3px;height:4px;width:100%;">
+                <div style="background:#ef4444;border-radius:3px;height:4px;width:{bar_width}%;"></div>
+              </div>
+              <div style="font-family:'DM Mono',monospace;font-size:0.6rem;
+                          color:#6b6880;margin-top:0.3rem;">
+                {int(row["fatal_count"])} fatal crashes on this corridor
               </div>
             </div>
             """,
@@ -348,7 +360,7 @@ if "on_street_name" in df.columns:
         st.metric("Highest Risk Corridor", top_street)
 
     # Policy callout — data-derived street names, sourced external stat
-    top3 = ", ".join(corridors.head(3)["street"].str.title().tolist())
+    top5 = ", ".join(corridors.head(5)["street"].str.title().tolist())
     st.markdown(
         f"""
     <div style="border-left:3px solid #ef4444;padding:1.2rem 1.5rem;
@@ -358,7 +370,7 @@ if "on_street_name" in df.columns:
         Data-Derived Insight
       </div>
       <div style="font-size:1rem;color:#e8e3f0;line-height:1.75;">
-        Data shows the <strong>{top3}</strong> account for
+        Data shows the <strong>{top5}</strong> account for
         <strong>{pct_top5:.0f}%</strong> of all fatal and major injury crashes in Queens.
         NYC DOT's protected intersection program has demonstrated 20–40% reductions
         in serious injuries at treated locations across the city.

@@ -110,12 +110,21 @@ with col_a:
 with col_b:
     st.subheader("Crashes by Hour of Day")
     if "hour" in df.columns:
+        def to_ampm(h: int) -> str:
+            if h == 0: return "12 AM"
+            if h < 12: return f"{h} AM"
+            if h == 12: return "12 PM"
+            return f"{h - 12} PM"
+
         hourly = (
             df.filter(pl.col("hour").is_not_null())
             .group_by(["hour", "accident_severity"])
             .len()
             .sort("hour")
         ).to_pandas()
+        
+        hour_labels = [to_ampm(h) for h in range(24)]
+
         fig2 = go.Figure()
         for s in SEVERITY_ORDER:
             sub = hourly[hourly["accident_severity"] == s]
@@ -125,7 +134,9 @@ with col_b:
                     y=sub["len"],
                     name=s,
                     marker_color=SEVERITY_COLORS[s],
-                    hovertemplate=f"<b>{s}</b><br>Hour %{{x}}:00 · %{{y:,}} crashes<extra></extra>",
+                    hovertemplate=f"<b>{s}</b><br>%{{text}} · %{{y:,}} crashes<extra></extra>",
+                    text=sub["hour"].map(lambda h: to_ampm(h)),
+                    textposition="none",
                 )
             )
         fig2.update_layout(
@@ -133,7 +144,10 @@ with col_b:
             barmode="stack",
             height=300,
             margin=dict(t=20, b=40, l=40, r=20),
-            xaxis=dict(**XAXIS, title="Hour of Day"),
+            xaxis=dict(**XAXIS, title="Hour of Day",                tickmode="array",
+                tickvals=list(range(24)),
+                ticktext=hour_labels,
+                tickangle=-45),
             yaxis=dict(**YAXIS, title="Crashes"),
             legend=LEGEND,
         )

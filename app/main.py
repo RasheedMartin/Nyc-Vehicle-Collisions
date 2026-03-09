@@ -218,8 +218,7 @@ def load_train_meta() -> dict:
             "trained_at": data["trained_at"],
             "feature_importances": data["feature_importances"],
             "n_features": len(data["feature_importances"]),
-            # xgboost_params not in /meta — add to API if needed
-            "xgboost_params": {},
+            "xgboost_params": data.get("xgboost_params", {}),
             "borough": "QUEENS",
         }
     except Exception as e:
