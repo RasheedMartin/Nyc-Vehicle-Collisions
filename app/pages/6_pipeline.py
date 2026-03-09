@@ -7,7 +7,8 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 import streamlit as st
 import polars as pl
-from datetime import datetime
+from datetime import datetime, timezone
+import zoneinfo
 from utils import load_data, load_train_meta
 
 train_meta = load_train_meta()
@@ -111,6 +112,19 @@ st.divider()
 
 # ── Last run + infrastructure ─────────────────────────────────────────────────
 
+
+def fmt_trained_at(iso: str) -> str:
+    try:
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)  # assume UTC if no tz
+        eastern = zoneinfo.ZoneInfo("America/New_York")
+        dt_local = dt.astimezone(eastern)
+        return dt_local.strftime("%b %d, %Y %I:%M %p ET")
+    except Exception:
+        return iso
+
+
 col_l, col_r = st.columns(2, gap="large")
 
 with col_l:
@@ -122,7 +136,7 @@ with col_l:
         unsafe_allow_html=True,
     )
 
-    st.metric("Retrained", trained_at)
+    st.metric("Retrained", fmt_trained_at(train_meta["trained_at"]))
     st.metric("Training rows", f"{train_meta['n_train']:,}")
     st.metric("Test rows", f"{train_meta['n_test']:,}")
     st.metric(
