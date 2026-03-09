@@ -152,6 +152,53 @@ def task_fetch(**context) -> None:
     """
     run_script("fetch.py", "--mode", "incremental")
 
+def task_has_new_data(**context) -> bool:
+    """
+    Short-circuit gate: returns True if fetch.py pulled new records, False to
+    skip the rest of the pipeline.
+
+    Reads raw/.last_fetch.json from R2 and compares last_fetch_date to the
+    DAG execution date. If the dates match, new data was pulled this run.
+    If not, the pipeline short-circuits and all downstream tasks are skipped —
+    saving ~30–40 min of compute on weeks where NYPD hasn't pushed new data.
+    """
+    import boto3
+    from botocore.config import Config
+
+    account_id = Variable.get("R2_ACCOUNT_ID", "")
+    if not account_id:
+        log.warning("R2_ACCOUNT_ID not set — assuming new data and proceeding")
+        return True
+
+    try:
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=f"https://{account_id}.r2.cloudflarestorage.com",
+            aws_access_key_id=Variable.get("R2_ACCESS_KEY_ID"),
+            aws_secret_access_key=Variable.get("R2_SECRET_ACCESS_KEY"),
+            config=Config(signature_version="s3v4"),
+            region_name="auto",
+        )
+        bucket = Variable.get("R2_BUCKET_NAME", "nyc-collisions")
+        resp   = s3.get_object(Bucket=bucket, Key="raw/.last_fetch.json")
+        meta   = json.loads(resp["Body"].read().decode())
+
+        last_fetch = meta.get("last_fetch_date", "")[:10]   # YYYY-MM-DD
+        exec_date  = context["ds"]                           # YYYY-MM-DD
+
+        if last_fetch == exec_date:
+            log.info("New data confirmed for %s — proceeding with pipeline", exec_date)
+            return True
+
+        log.info(
+            "No new data for %s (last_fetch_date=%s) — short-circuiting",
+            exec_date, last_fetch,
+        )
+        return False
+
+    except Exception as e:
+        log.warning("Could not read .last_fetch.json (%s) — proceeding anyway", e)
+        return True
 
 def task_clean(**context) -> None:
     run_script("clean.py")
@@ -253,7 +300,7 @@ def task_redeploy_railway(**context) -> None:
         log.info("GitHub Actions triggered — HTTP %s", resp.status)
     log.info("Railway redeploy workflow dispatched — app will redeploy with new R2 artifacts")
 
-def reload_api():
+def task_reload_api():
     """
         Hot-swap the XGBoost model and preprocessor on the live FastAPI inference
     service by calling POST /reload.
@@ -271,6 +318,7 @@ def reload_api():
     headers = {"X-API-Key": api_key} if api_key else {}
     resp = requests.post(f"{api_url}/reload", headers=headers, timeout=30)
     resp.raise_for_status()
+    log.info("API reload successful — model hot-swapped in memory")
 
 # ── DAG ───────────────────────────────────────────────────────────────────────
 
