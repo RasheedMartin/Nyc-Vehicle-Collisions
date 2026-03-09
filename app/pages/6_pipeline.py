@@ -66,6 +66,7 @@ STAGES = [
     ("Features", "Encode + fit", "#6d28d9"),
     ("Train", "XGBoost + SMOTE", "#6d28d9"),
     ("R2 Upload", "Cloudflare R2", "#7c3aed"),
+    ("API Reload", "Hot-swap model", "#8b5cf6"),
     ("GitHub Actions", "workflow_dispatch", "#9333ea"),
     ("Railway", "Live redeploy", "#a855f7"),
 ]
