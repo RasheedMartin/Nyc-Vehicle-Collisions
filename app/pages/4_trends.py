@@ -8,7 +8,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 import streamlit as st
 import polars as pl
 import plotly.graph_objects as go
-from main import load_data
+from utils import load_data
 from theme import SEVERITY_COLORS, SEVERITY_ORDER, CHART_BG, GRID_COLOR, TEXT, SUBTEXT
 
 df = load_data()
