@@ -1,0 +1,3 @@
+# Ignore generated/vendor files from language stats
+Visualizations/*.html linguist-generated=true
+Borough Boundaries/* linguist-documentation=true
