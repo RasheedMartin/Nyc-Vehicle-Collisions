@@ -1,14 +1,16 @@
 """
 pages/2_hotspot_map.py
 
-Back on pydeck (deck.gl) — pure client-side WebGL.
-Folium's st_folium triggers a Python rerun on every zoom/pan because it's a
-two-way bridge designed for receiving map events. For a display-only map
-pydeck is strictly better: no roundtrips, handles 150k+ points smoothly.
+pydeck (deck.gl) map, fed with *pre-aggregated* data.
 
-Fix for the old vars() __dict__ error: never put a Python list inside a
-pandas cell. Instead, explode RGB into separate r/g/b integer columns and
-reference them in get_fill_color=["r","g","b",200].
+Why aggregate server-side: Queens has ~1.2M crashes. Shipping raw points to
+the browser meant a ~20 MB JSON payload on every filter change (and random
+sampling that distorted the heatmap). Binning into ~165 m grid cells collapses
+that to ~8k rows / a few hundred KB with exact counts — heatmap is weighted by
+the true count, so nothing is lost visually.
+
+Scatter mode still shows individual crashes, but capped (all fatal crashes are
+always kept) and with a slim column set.
 """
 
 import sys
@@ -16,13 +18,141 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).parent.parent))
 
-import streamlit as st
+import numpy as np
+import pandas as pd
 import polars as pl
 import pydeck as pdk
+import streamlit as st
+from theme import HEATMAP_COLOR_RANGE, SEVERITY_COLORS, SEVERITY_ORDER
 from utils import load_data
-from theme import SEVERITY_ORDER, HEATMAP_COLOR_RANGE
+
+# ~165 m cells at Queens' latitude (1° lat ≈ 111 km; 1° lon ≈ 84 km at 40.7°N)
+LAT_STEP = 0.0015
+LON_STEP = 0.002
+CELL_SIZE_M = 165
+SCATTER_CAP = 20_000
+
+SEVERITY_RGB = {
+    s: tuple(int(SEVERITY_COLORS[s][i : i + 2], 16) for i in (1, 3, 5))
+    for s in SEVERITY_ORDER
+}
+
+TOOLTIP_STYLE = {
+    "backgroundColor": "#13131f",
+    "color": "#e8e3f0",
+    "fontFamily": "DM Mono, monospace",
+    "fontSize": "11px",
+    "border": "1px solid #1f1f30",
+    "borderRadius": "6px",
+}
 
 df = load_data()
+# Cheap fingerprint so cached aggregates invalidate when the parquet refreshes
+DATA_VERSION = (df.height, str(df["crash_date"].max()))
+
+
+# ── Cached aggregations ──────────────────────────────────────────────────────
+
+
+def _filtered(_df: pl.DataFrame, severities: tuple, years: tuple) -> pl.DataFrame:
+    out = _df.filter(
+        pl.col("accident_severity").is_in(list(severities))
+        & pl.col("latitude").is_not_null()
+        & pl.col("longitude").is_not_null()
+    )
+    if years:
+        out = out.filter(pl.col("year").is_between(years[0], years[1]))
+    return out
+
+
+@st.cache_data(show_spinner=False, max_entries=64)
+def grid_cells(
+    _df: pl.DataFrame, version, severities: tuple, years: tuple
+) -> pd.DataFrame:
+    """Bin crashes into ~165 m cells with counts, severe/fatal counts, top street."""
+    has_street = "on_street_name" in _df.columns
+    aggs = [
+        pl.len().alias("n"),
+        (pl.col("accident_severity") == "Fatal").sum().alias("fatal"),
+        pl.col("accident_severity")
+        .is_in(["Fatal", "Major Injury"])
+        .sum()
+        .alias("severe"),
+    ]
+    if has_street:
+        aggs.append(
+            pl.col("on_street_name")
+            .drop_nulls()
+            .str.strip_chars()
+            .str.to_titlecase()
+            .mode()
+            .first()
+            .alias("street")
+        )
+
+    cells = (
+        _filtered(_df, severities, years)
+        .with_columns(
+            (pl.col("latitude") / LAT_STEP).floor().cast(pl.Int32).alias("gy"),
+            (pl.col("longitude") / LON_STEP).floor().cast(pl.Int32).alias("gx"),
+        )
+        .group_by("gy", "gx")
+        .agg(aggs)
+        .with_columns(
+            # cell corner (GridCellLayer) and centre (HeatmapLayer)
+            (pl.col("gy") * LAT_STEP).round(5).alias("lat0"),
+            (pl.col("gx") * LON_STEP).round(5).alias("lon0"),
+            ((pl.col("gy") + 0.5) * LAT_STEP).round(5).alias("lat"),
+            ((pl.col("gx") + 0.5) * LON_STEP).round(5).alias("lon"),
+        )
+        .to_pandas()
+    )
+    if not has_street:
+        cells["street"] = ""
+    cells["street"] = cells["street"].fillna("—")
+
+    # Log-scaled colour ramp over the theme's heatmap palette
+    if len(cells):
+        t = np.log1p(cells["n"]) / np.log1p(cells["n"].max())
+        stops = np.array(HEATMAP_COLOR_RANGE, dtype=float)
+        pos = t * (len(stops) - 1)
+        i = np.clip(pos.astype(int), 0, len(stops) - 2)
+        frac = (pos - i).to_numpy()[:, None]
+        rgb = stops[i] * (1 - frac) + stops[i + 1] * frac
+        cells[["r", "g", "b"]] = rgb.round().astype(np.uint8)
+    return cells.drop(columns=["gy", "gx"])
+
+
+@st.cache_data(show_spinner=False, max_entries=32)
+def scatter_points(_df: pl.DataFrame, version, severities: tuple, years: tuple):
+    """Individual crashes, capped; every fatal crash is always kept."""
+    pts = _filtered(_df, severities, years)
+    total = pts.height
+    if total > SCATTER_CAP:
+        fatal = pts.filter(pl.col("accident_severity") == "Fatal")
+        rest = pts.filter(pl.col("accident_severity") != "Fatal")
+        n_rest = max(SCATTER_CAP - fatal.height, 0)
+        pts = pl.concat([fatal, rest.sample(n=min(n_rest, rest.height), seed=42)])
+
+    out = pts.select(
+        pl.col("longitude").round(5).alias("lon"),
+        pl.col("latitude").round(5).alias("lat"),
+        pl.col("accident_severity").alias("severity"),
+        pl.col("crash_date").cast(pl.Utf8).alias("date"),
+        pl.col("contributing_factor_vehicle_1")
+        .fill_null("Unspecified")
+        .alias("factor"),
+    ).to_pandas()
+    for k, ch in enumerate("rgb"):
+        out[ch] = (
+            out["severity"]
+            .map(lambda s, k=k: SEVERITY_RGB.get(s, (150, 150, 150))[k])
+            .astype(np.uint8)
+        )
+    return out, total
+
+
+# ── Header ───────────────────────────────────────────────────────────────────
 
 _year_list = df["year"].drop_nulls().cast(pl.Int32).unique().sort().to_list()
 year_label = (
@@ -32,8 +162,6 @@ year_label = (
     if _year_list
     else ""
 )
-
-# ── Header (HTML: Bebas Neue + custom sizing) ─────────────────────────────────
 
 st.markdown(
     f"""
@@ -52,226 +180,128 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ── Filters — native components ───────────────────────────────────────────────
+# ── Filters ──────────────────────────────────────────────────────────────────
 
 col_f1, col_f2, col_f3 = st.columns([2, 2, 1])
-
 with col_f1:
     selected_severity = st.multiselect(
         "Severity", SEVERITY_ORDER, default=["Fatal", "Major Injury"]
     )
 with col_f2:
-    map_style = st.selectbox("Map Style", ["Heatmap", "Scatter Points", "Density Grid"])
+    map_style = st.selectbox("Map Style", ["Heatmap", "Density Grid", "Scatter Points"])
 with col_f3:
-    year_range = None
-    if "year" in df.columns:
-        years = sorted(df["year"].drop_nulls().unique().to_list())
-        if len(years) == 1:
-            st.caption(f"Year: {years[0]}")
-            year_range = (years[0], years[0])
-        elif len(years) > 1:
-            year_range = st.select_slider(
-                "Year", options=years, value=(years[0], years[-1])
+    year_range: tuple = ()
+    if len(_year_list) == 1:
+        st.caption(f"Year: {_year_list[0]}")
+    elif len(_year_list) > 1:
+        year_range = tuple(
+            st.select_slider(
+                "Year", options=_year_list, value=(_year_list[0], _year_list[-1])
             )
+        )
 
-# ── Filter ────────────────────────────────────────────────────────────────────
+if not selected_severity:
+    st.info("Select at least one severity level to draw the map.", icon="ℹ️")
+    st.stop()
 
-map_df = df.filter(
-    pl.col("accident_severity").is_in(selected_severity)
-    & pl.col("latitude").is_not_null()
-    & pl.col("longitude").is_not_null()
-)
-if year_range and "year" in df.columns:
-    map_df = map_df.filter(pl.col("year").is_between(year_range[0], year_range[1]))
-if len(map_df) > 150_000:
-    map_df = map_df.sample(n=150_000, seed=42)
+sev_key = tuple(sorted(selected_severity, key=SEVERITY_ORDER.index))
 
-st.caption(f"Showing {len(map_df):,} crashes")
+# ── Layers ───────────────────────────────────────────────────────────────────
 
-# ── Build pandas payload ──────────────────────────────────────────────────────
+view_state = pdk.ViewState(latitude=40.7282, longitude=-73.7949, zoom=10.8, pitch=0)
+tooltip = None
 
-SEVERITY_RGB = {
-    "No Injury": (74, 222, 128),
-    "Minor Injury": (250, 204, 21),
-    "Major Injury": (249, 115, 22),
-    "Fatal": (239, 68, 68),
-}
-
-map_pd = map_df.select(
-    [
-        "latitude",
-        "longitude",
-        "accident_severity",
-        pl.col("crash_date").cast(pl.Utf8).alias("date"),
-        pl.col("contributing_factor_vehicle_1").alias("factor"),
-    ]
-).to_pandas()
-
-# Separate r/g/b columns — pydeck's JSON serialiser cannot handle Python
-# lists stored inside pandas cells (causes vars() __dict__ TypeError)
-map_pd["r"] = map_pd["accident_severity"].map(
-    lambda s: SEVERITY_RGB.get(s, (150, 150, 150))[0]
-)
-map_pd["g"] = map_pd["accident_severity"].map(
-    lambda s: SEVERITY_RGB.get(s, (150, 150, 150))[1]
-)
-map_pd["b"] = map_pd["accident_severity"].map(
-    lambda s: SEVERITY_RGB.get(s, (150, 150, 150))[2]
-)
-
-# ── Layer ─────────────────────────────────────────────────────────────────────
-
-view_state = pdk.ViewState(latitude=40.7282, longitude=-73.7949, zoom=11, pitch=0)
-
-if map_style == "Heatmap":
-    layer = pdk.Layer(
-        "HeatmapLayer",
-        data=map_pd,
-        get_position=["longitude", "latitude"],
-        get_weight=1,
-        radius_pixels=45,
-        intensity=1.0,
-        threshold=0.05,
-        pickable=True,
-        color_range=HEATMAP_COLOR_RANGE,
+if map_style == "Scatter Points":
+    data, total = scatter_points(df, DATA_VERSION, sev_key, year_range)
+    shown = len(data)
+    caption = f"Showing {shown:,} of {total:,} crashes" + (
+        " · sampled for speed, all fatal crashes kept" if shown < total else ""
     )
-
-    tooltip = {
-        "text": "Crash density hotspot",
-        "style": {
-            "backgroundColor": "#13131f",
-            "color": "#e8e3f0",
-            "fontFamily": "DM Mono",
-            "fontSize": "11px",
-            "border": "1px solid #1f1f30",
-        },
-    }
-elif map_style == "Scatter Points":
     layer = pdk.Layer(
         "ScatterplotLayer",
-        data=map_pd,
-        get_position=["longitude", "latitude"],
+        data=data,
+        get_position=["lon", "lat"],
         get_fill_color=["r", "g", "b", 200],
-        get_radius=50,
+        get_radius=40,
         radius_min_pixels=2,
-        radius_max_pixels=10,
+        radius_max_pixels=8,
         pickable=True,
-        opacity=0.85,
         stroked=False,
     )
     tooltip = {
-        "html": (
-            "<div style='font-family:DM Mono,monospace;font-size:0.75rem;"
-            "background:#13131f;color:#e8e3f0;padding:0.6rem 0.9rem;"
-            "border:1px solid #1f1f30;border-radius:6px;'>"
-            "<b style='color:#ef4444;'>{accident_severity}</b><br/>"
-            "{date}<br/>"
-            "<span style='color:#6b6880;'>{factor}</span>"
-            "</div>"
-        ),
-        "style": {"backgroundColor": "transparent", "border": "none"},
+        "html": "<b>{severity}</b><br/>{date}<br/><span style='color:#6b6880'>{factor}</span>",
+        "style": TOOLTIP_STYLE,
     }
-else:
-    # ScreenGridLayer: counts points per screen-space cell.
-    # No weight column = no min/max range error.
-    # No color_range override = avoids the RangeError we hit before.
-    layer = pdk.Layer(
-        "ScreenGridLayer",
-        data=map_pd,
-        get_position=["longitude", "latitude"],
-        cell_size_pixels=14,
-        opacity=0.8,
-        pickable=False,
+    legend_html = "".join(
+        f"<span style='display:inline-flex;align-items:center;margin-right:1rem;'>"
+        f"<span style='background:{SEVERITY_COLORS[s]};width:10px;height:10px;"
+        f"border-radius:50%;display:inline-block;margin-right:6px;'></span>{s}</span>"
+        for s in reversed(SEVERITY_ORDER)
     )
-    tooltip = None
+else:
+    cells = grid_cells(df, DATA_VERSION, sev_key, year_range)
+    total = int(cells["n"].sum()) if len(cells) else 0
+    caption = f"{total:,} crashes aggregated into {len(cells):,} ~{CELL_SIZE_M} m cells"
+
+    if map_style == "Heatmap":
+        layer = pdk.Layer(
+            "HeatmapLayer",
+            data=cells[["lon", "lat", "n"]],
+            get_position=["lon", "lat"],
+            get_weight="n",
+            radius_pixels=35,
+            intensity=1.0,
+            threshold=0.03,
+            color_range=HEATMAP_COLOR_RANGE,
+        )
+    else:
+        layer = pdk.Layer(
+            "GridCellLayer",
+            data=cells,
+            get_position=["lon0", "lat0"],
+            cell_size=CELL_SIZE_M,
+            get_fill_color=["r", "g", "b", 210],
+            extruded=False,
+            pickable=True,
+        )
+        tooltip = {
+            "html": (
+                "<b>{street}</b><br/>{n} crashes<br/>"
+                "<span style='color:#f97316'>{severe} severe</span> · "
+                "<span style='color:#ef4444'>{fatal} fatal</span>"
+            ),
+            "style": TOOLTIP_STYLE,
+        }
+    legend_html = (
+        "<span style='margin-right:0.6rem;'>Low</span>"
+        "<span style='display:inline-block;width:140px;height:10px;border-radius:5px;"
+        "background:linear-gradient(90deg,#13131f,#7c3aed,#ef4444);vertical-align:middle;'></span>"
+        "<span style='margin-left:0.6rem;'>High</span>"
+        + (
+            ""
+            if map_style == "Heatmap"
+            else " <span style='color:#6b6880'>(log scale)</span>"
+        )
+    )
+
+st.markdown(
+    f"""<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:0.5rem;
+    font-family:'DM Mono',monospace;font-size:0.72rem;color:#e8e3f0;margin-bottom:0.4rem;">
+    <div style="color:#6b6880;">{caption}</div><div>{legend_html}</div></div>""",
+    unsafe_allow_html=True,
+)
 
 st.pydeck_chart(
     pdk.Deck(
         layers=[layer],
         initial_view_state=view_state,
         map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
-        tooltip=True,
+        tooltip=tooltip or False,
     ),
     width="stretch",
     height=560,
 )
-if map_style == "Scatter Points":
-    st.markdown(
-        """
-<div style="
-  position: relative;
-  display: inline-block;
-  background: #13131f;
-  border: 1px solid #1f1f30;
-  border-radius: 6px;
-  padding: 0.75rem 1rem;
-  margin-top: -520px;
-  margin-left: 1rem;
-  z-index: 10;
-  width: 180px;
-">
-  <div style="font-family:DM Mono,monospace;
-              font-size:0.65rem;
-              letter-spacing:0.12em;
-              text-transform:uppercase;
-              color:#6b6880;
-              margin-bottom:0.6rem;">
-    Severity
-  </div>
-  <div style="display:flex;flex-direction:column;gap:0.4rem;">
-    <div><span style="background:#ef4444;width:10px;height:10px;display:inline-block;border-radius:50%;margin-right:6px;"></span>Fatal</div>
-    <div><span style="background:#f97316;width:10px;height:10px;display:inline-block;border-radius:50%;margin-right:6px;"></span>Major Injury</div>
-    <div><span style="background:#facc15;width:10px;height:10px;display:inline-block;border-radius:50%;margin-right:6px;"></span>Minor Injury</div>
-    <div><span style="background:#4ade80;width:10px;height:10px;display:inline-block;border-radius:50%;margin-right:6px;"></span>No Injury</div>
-  </div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
-elif map_style == "Heatmap":
-    st.markdown(
-        """
-    <div style="
-      position: relative;
-      display: inline-block;
-      background: #13131f;
-      border: 1px solid #1f1f30;
-      border-radius: 6px;
-      padding: 0.75rem 1rem;
-      margin-top: -520px;
-      margin-left: 1rem;
-      z-index: 10;
-      width: 200px;
-    ">
-      <div style="font-family:DM Mono,monospace;
-                  font-size:0.65rem;
-                  letter-spacing:0.12em;
-                  text-transform:uppercase;
-                  color:#6b6880;
-                  margin-bottom:0.6rem;">
-        Crash Density
-      </div>
-      <div style="
-        height: 10px;
-        background: linear-gradient(
-          90deg,
-          #13131f,
-          #7c3aed,
-          #ef4444
-        );
-        border-radius: 5px;
-        margin-bottom: 0.4rem;
-      "></div>
-      <div style="display:flex;justify-content:space-between;
-                  font-family:DM Mono,monospace;
-                  font-size:0.6rem;color:#6b6880;">
-        <span>Low</span>
-        <span>High</span>
-      </div>
-    </div>
-    """,
-        unsafe_allow_html=True,
-    )
+
 # ── Top corridors — computed from data ────────────────────────────────────────
 # Uses on_street_name from the crashes dataset (added to CRASH_COLS in clean.py).
 # Falls back to lat/lon grid clusters if street names aren't in this parquet yet

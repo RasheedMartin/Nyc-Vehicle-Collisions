@@ -156,7 +156,11 @@ def _ensure_parquet() -> None:
 # ── Loaders ───────────────────────────────────────────────────────────────────
 
 
-@st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner="Loading collision data…")
+# cache_resource, not cache_data: cache_data pickles and returns a fresh copy of
+# the ~190 MB frame on every call (every page view, every user), which is what
+# pushed the Streamlit service to 1.7 GB. Polars frames are immutable here, so
+# one shared object is safe.
+@st.cache_resource(ttl=CACHE_TTL_SECONDS, show_spinner="Loading collision data…")
 def load_data() -> pl.DataFrame:
     """
     Load the Queens collision parquet from the Railway Volume.
