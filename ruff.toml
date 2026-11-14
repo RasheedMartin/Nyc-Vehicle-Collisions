@@ -1,0 +1,6 @@
+# Keep CI and local runs on the same rules regardless of ruff's evolving defaults.
+target-version = "py312"
+extend-exclude = ["src/data-pipeline/old_notebooks"]
+
+[lint]
+select = ["E4", "E7", "E9", "F"]

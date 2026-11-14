@@ -8,7 +8,6 @@ refreshes hourly from the inference API.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -32,7 +31,7 @@ DATA_PATH = VOLUME_DIR / "collisions_queens.parquet"
 
 # R2 key for the parquet
 R2_PARQUET_KEY = "processed/QUEENS/collisions_queens.parquet"
-CACHE_TTL_SECONDS = int(os.environ.get("PARQUET_CACHE_TTL", 6 * 24 * 3600))
+CACHE_TTL_SECONDS = int(os.environ.get("PARQUET_CACHE_TTL", 3600))
 
 
 # ── R2 client ─────────────────────────────────────────────────────────────────
@@ -63,19 +62,18 @@ def _local_mtime() -> datetime | None:
 
 def _r2_last_fetch_date(client) -> datetime | None:
     """
-    Read last_fetch_date from raw/.last_fetch.json in R2.
-    This is written by fetch.py after every successful Airflow run,
-    so it reflects when new data was actually pulled from NYC Open Data.
+    Return when the processed parquet was last written to R2 (its LastModified).
+
+    This is the artifact we actually serve, so it's the ground truth for
+    "is there newer data?" — no dependency on metadata key names staying in
+    sync with fetch.py.
     """
     bucket = os.environ.get("R2_BUCKET_NAME", "nyc-collisions")
     try:
-        resp = client.get_object(Bucket=bucket, Key="raw/.last_fetch.json")
-        meta = json.loads(resp["Body"].read().decode())
-        return datetime.fromisoformat(meta["last_fetch_date"]).replace(
-            tzinfo=timezone.utc
-        )
+        resp = client.head_object(Bucket=bucket, Key=R2_PARQUET_KEY)
+        return resp["LastModified"].astimezone(timezone.utc)
     except Exception as e:
-        log.warning(f"Could not read .last_fetch.json from R2: {e}")
+        log.warning(f"Could not HEAD {R2_PARQUET_KEY} in R2: {e}")
         return None
 
 
@@ -86,8 +84,8 @@ def _needs_refresh(client) -> bool:
     Rules:
       1. File doesn't exist locally → always download.
       2. File age is within CACHE_TTL_SECONDS → use cache, skip all R2 checks.
-      3. File is past TTL → read raw/.last_fetch.json from R2 (tiny request).
-         If Airflow has fetched new data since the parquet was last downloaded
+      3. File is past TTL → HEAD the parquet in R2 (tiny request).
+         If R2 has a newer copy than the one on the Volume
          → re-download. Otherwise keep serving the cached file.
     """
     local_mtime = _local_mtime()
@@ -108,25 +106,25 @@ def _needs_refresh(client) -> bool:
 
     # Rule 3 — past TTL, check .last_fetch.json
     log.info(
-        f"Local parquet is {age_seconds / 3600:.1f}h old — checking .last_fetch.json"
+        f"Local parquet is {age_seconds / 3600:.1f}h old — checking R2 LastModified"
     )
     last_fetch = _r2_last_fetch_date(client)
 
     if last_fetch is None:
         # Can't read metadata — serve stale file rather than failing
-        log.warning("Could not read last_fetch.json — serving existing cache")
+        log.warning("Could not reach R2 — serving existing cache")
         return False
 
     if last_fetch > local_mtime:
         log.info(
-            f"Airflow fetched new data at {last_fetch.isoformat()} "
+            f"R2 parquet updated at {last_fetch.isoformat()} "
             f"(parquet last downloaded {local_mtime.isoformat()}) — refreshing"
         )
         return True
 
     log.info(
         f"No new data since last download "
-        f"(last fetch: {last_fetch.isoformat()}) — using cache"
+        f"(R2 parquet: {last_fetch.isoformat()}) — using cache"
     )
     return False
 
@@ -158,11 +156,12 @@ def _ensure_parquet() -> None:
 # ── Loaders ───────────────────────────────────────────────────────────────────
 
 
-@st.cache_data(show_spinner="Loading collision data…")
+@st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner="Loading collision data…")
 def load_data() -> pl.DataFrame:
     """
     Load the Queens collision parquet from the Railway Volume.
-    Cached for the lifetime of the Streamlit process — all users share this.
+    Shared across users; re-checks R2 every CACHE_TTL_SECONDS so new pipeline
+    output appears without a redeploy.
     """
     _ensure_parquet()
     log.info(f"Reading parquet from {DATA_PATH}")

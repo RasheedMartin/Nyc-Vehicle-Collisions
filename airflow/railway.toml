@@ -1,0 +1,12 @@
+# Railway service config for Airflow.
+# In the Railway service settings: Root Directory = "/" (repo root, so the
+# build can see src/ and dags/) and Config File Path = "/airflow/railway.toml".
+[build]
+builder = "dockerfile"
+dockerfilePath = "airflow/Dockerfile"
+watchPatterns = ["airflow/**", "dags/**", "src/data-pipeline/**", "Borough Boundaries/**"]
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "always"

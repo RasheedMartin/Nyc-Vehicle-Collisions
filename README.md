@@ -71,7 +71,7 @@ Cloudflare R2 ── artifact store (parquet, joblib, json metadata)
   reads parquet locally            only when Airflow fetches new data
 ```
 
-**Orchestration**: Apache Airflow (Docker) runs the full pipeline every Monday at 6am.  
+**Orchestration**: Apache Airflow (Docker, deployed on Railway) runs the full pipeline every Monday at 6am ET.  
 **Stack**: Python · Polars · XGBoost · scikit-learn · SMOTE · Streamlit · FastAPI · Plotly · boto3
 
 ---
@@ -96,19 +96,25 @@ Cloudflare R2 ── artifact store (parquet, joblib, json metadata)
 │   │   ├── fetch.py                   # Socrata API pull (full or incremental)
 │   │   ├── clean.py                   # Merge, filter, feature engineering
 │   │   ├── features.py                # Encoding, preprocessor fitting
-│   │   └── train.py                   # XGBoost training + evaluation
+│   │   ├── train.py                   # XGBoost training + evaluation
+│   │   └── upload.py                  # Push artifacts to R2 (model last)
 │   └── api/
 │       ├── main.py                    # FastAPI inference service
 │       ├── Dockerfile                 # Multi-stage build (libgomp1 for XGBoost on Linux)
 │       ├── requirements.txt
 │       └── railway.toml
 │
-├── airflow-docker/
-│   └── docker-compose.yaml            # Airflow + Postgres + Redis
+├── airflow/
+│   ├── Dockerfile                     # Airflow 2.10 + isolated pipeline venv
+│   ├── entrypoint.sh                  # migrate → scheduler + webserver
+│   ├── docker-compose.yaml            # local mirror of the Railway service
+│   ├── railway.toml
+│   └── requirements-pipeline.txt      # pinned ML stack (matches API pins)
 ├── dags/
 │   └── nyc_collisions_retrain.py
 │
 ├── .github/workflows/
+│   ├── ci.yml                         # ruff, Airflow image build, DAG integrity, pin check
 │   └── redeploy-railway.yml           # Triggered by Airflow after R2 upload
 │
 └── requirements.txt
@@ -201,51 +207,59 @@ streamlit run app/main.py
 
 ## MLOps — Weekly Retraining
 
-The Airflow DAG `nyc_collisions_retrain` runs every Monday at 6am:
+The Airflow DAG `nyc_collisions_retrain` runs every Monday at 06:00 America/New_York on Railway:
 
 ```
-fetch (incremental) → clean → features → train → upload_r2 → reload_task → redeploy_railway
+fetch → check_new_data → clean → features → train → upload_r2
+      → wait_for_api → reload_api → redeploy_railway → notify_success
 ```
 
-After `upload_r2`, `reload_task` calls `POST /reload` on the FastAPI service to hot-swap the model in memory immediately — so predictions are served from the new model as soon as artifacts land in R2, without waiting for Railway's redeploy cycle (~2–3 min). `redeploy_railway` then triggers a full Railway redeploy via GitHub Actions `workflow_dispatch` to refresh the Streamlit service.
+- **fetch** pulls new Socrata records incrementally, merges them into `raw/*.parquet` in R2 and records `crashes_rows_added` in `raw/.last_fetch.json`.
+- **check_new_data** short-circuits the run when no new crash rows arrived.
+- **upload_r2** (`src/data-pipeline/upload.py`) refuses partial uploads and writes the model last, so the API never pairs a new model with a stale preprocessor.
+- **reload_api** calls `POST /reload` over Railway's private network to hot-swap the model in memory.
+- **redeploy_railway** (optional, needs `GITHUB_TOKEN`) dispatches the GitHub Actions redeploy. Without it, Streamlit still picks up new data within `PARQUET_CACHE_TTL` (1h), because it compares the R2 parquet's `LastModified` with its Volume copy.
+- Failures email `NOTIFY_EMAIL` via `on_failure_callback` when SMTP is configured.
 
-The Streamlit app uses `raw/.last_fetch.json` (written by `fetch.py` to R2 after every successful pull) to decide whether to re-download the parquet from R2. Within the 6-day TTL it never hits R2 at all, keeping cold starts fast.
+Pipeline scripts run in an isolated venv (`/opt/nyc-venv`) inside the Airflow image. `scikit-learn`, `xgboost`, `joblib`, `numpy` and `pandas` are pinned identically in `airflow/requirements-pipeline.txt` and `src/api/requirements.txt` (enforced in CI), because the API unpickles what training pickles.
 
-**Airflow Variables required** (set as OS env vars on the worker, not just Airflow Variables):
+### Run Airflow locally
 
-| Variable | Description |
-| --- | --- |
-| `R2_ACCOUNT_ID` | Cloudflare R2 account ID |
-| `R2_ACCESS_KEY_ID` | R2 access key |
-| `R2_SECRET_ACCESS_KEY` | R2 secret key |
-| `R2_BUCKET_NAME` | R2 bucket (default: `nyc-collisions`) |
-| `INFERENCE_API_URL` | FastAPI internal URL (e.g. `http://unique-harmony.railway.internal:8080`) |
-| `API_KEY` | Shared secret for `X-API-Key` auth on `/reload` |
-| `GITHUB_TOKEN` | PAT with `workflow` scope |
-| `GITHUB_REPO` | `RasheedMartin/Nyc-Vehicle-Collisions` |
-| `GITHUB_REF` | Branch with workflow file (default: `main`) |
-
-**GitHub Secrets required:**
-
-| Secret | Description |
-| --- | --- |
-| `RAILWAY_TOKEN` | Railway API token |
-| `RAILWAY_SERVICE_NAME` | Service name in Railway |
+```bash
+cp .env.example .env   # fill in R2_*, AIRFLOW__CORE__FERNET_KEY, AIRFLOW__WEBSERVER__SECRET_KEY, AIRFLOW_ADMIN_PASSWORD
+cd airflow && docker compose up --build
+# http://localhost:8080
+```
 
 ---
 
 ## Deployment (Railway)
 
-Two services in the same Railway project:
+Everything runs in one Railway project:
 
-| Service | Root | Start command |
-| --- | --- | --- |
-| `Frontend-Streamlit` | `/` | `streamlit run app/main.py` |
-| `Backend-API` | `/src/api` | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
+| Service | Root dir | Config | Notes |
+| --- | --- | --- | --- |
+| `Frontend-Streamlit` | `/app` | `app/railway.toml` | Volume at `/data` caches the parquet |
+| `Backend-API` | `/src/api` | `src/api/railway.toml` | Public + private (`*.railway.internal`) |
+| `Airflow` | `/` | `/airflow/railway.toml` | Scheduler + webserver, LocalExecutor |
+| `Postgres` | — | Railway template | Airflow metadata DB |
 
-Add a **Volume** to the Streamlit service mounted at `/data` for persistent parquet caching across redeploys.
+**Airflow service variables**
 
-Both services share env vars `R2_*` and `API_KEY`. Set `INFERENCE_API_URL` on the Streamlit service to the API's Railway internal URL so traffic stays on the private network.
+| Variable | Value |
+| --- | --- |
+| `AIRFLOW__DATABASE__SQL_ALCHEMY_CONN` | `${{Postgres.DATABASE_URL}}` |
+| `AIRFLOW__CORE__FERNET_KEY` / `AIRFLOW__WEBSERVER__SECRET_KEY` | generated secrets |
+| `AIRFLOW_ADMIN_USER` / `AIRFLOW_ADMIN_PASSWORD` | UI login |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` | `${{Backend-API.R2_*}}` references |
+| `API_KEY` | `${{Backend-API.API_KEY}}` |
+| `INFERENCE_API_URL` | `http://${{Backend-API.RAILWAY_PRIVATE_DOMAIN}}:8080` |
+| `AIRFLOW_CONN_INFERENCE_API` | same URL as above |
+| `NYC_OPEN_DATA_APP_TOKEN` | Socrata app token (optional) |
+| `GITHUB_TOKEN` | fine-grained PAT, Actions: write on this repo (optional) |
+| `NOTIFY_EMAIL`, `AIRFLOW__SMTP__*` | alerting (optional) |
+
+**GitHub Secrets** (for `redeploy-railway.yml`): `RAILWAY_TOKEN`, `RAILWAY_SERVICE_NAME`.
 
 ---
 
