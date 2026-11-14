@@ -567,6 +567,10 @@ def run_fetch(
     else:
         log.warning("No new crash records — loading existing data unchanged")
         crashes = load_existing(r2, R2_CRASHES_KEY, crashes_local)
+        # clean.py reads the local copy — make sure it exists on a fresh
+        # container (e.g. right after a Railway redeploy) even with no new rows.
+        if not crashes.is_empty() and not crashes_local.exists():
+            _local_write_parquet(crashes, crashes_local)
 
     # ── Person ────────────────────────────────────────────────────────────────
     new_person: pl.DataFrame = client.fetch_dataset(
@@ -589,6 +593,10 @@ def run_fetch(
     else:
         log.warning("No new person records — loading existing data unchanged")
         person = load_existing(r2, R2_PERSON_KEY, person_local)
+        # clean.py reads the local copy — make sure it exists on a fresh
+        # container (e.g. right after a Railway redeploy) even with no new rows.
+        if not person.is_empty() and not person_local.exists():
+            _local_write_parquet(person, person_local)
 
     # ── Update metadata ───────────────────────────────────────────────────────
     # crashes_rows_added drives the Airflow short-circuit gate: if the merged

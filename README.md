@@ -228,7 +228,7 @@ fetch → check_new_data → clean → features → train → upload_r2
 ```
 
 - **fetch** pulls new Socrata records incrementally, merges them into `raw/*.parquet` in R2 and records `crashes_rows_added` in `raw/.last_fetch.json`.
-- **check_new_data** short-circuits the run when no new crash rows arrived.
+- **check_new_data** short-circuits the run when no new crash rows arrived. Trigger with config `{"force": true}` (Airflow UI → Trigger DAG w/ config) to retrain anyway, e.g. after changing training code.
 - **upload_r2** (`src/data-pipeline/upload.py`) refuses partial uploads and writes the model last, so the API never pairs a new model with a stale preprocessor.
 - **reload_api** calls `POST /reload` over Railway's private network to hot-swap the model in memory.
 - **redeploy_railway** (optional, needs `GITHUB_TOKEN`) dispatches the GitHub Actions redeploy. Without it, Streamlit still picks up new data within `PARQUET_CACHE_TTL` (1h), because it compares the R2 parquet's `LastModified` with its Volume copy.

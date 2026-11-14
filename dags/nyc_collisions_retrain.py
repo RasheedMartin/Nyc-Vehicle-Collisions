@@ -138,12 +138,19 @@ def run_script(script: str, *args: str) -> None:
 # ── Tasks ────────────────────────────────────────────────────────────────────
 
 
-def task_has_new_data(**_) -> bool:
+def task_has_new_data(**context) -> bool:
     """
     Short-circuit gate. fetch.py writes data/raw/.last_fetch.json locally (and
     to R2) with `crashes_rows_added`; skip the expensive downstream tasks when
     the merged dataset didn't grow.
+
+    Trigger with conf {"force": true} to retrain regardless (e.g. after a
+    training-code change).
     """
+    conf = context["dag_run"].conf or {}
+    if conf.get("force"):
+        log.info("force=true in dag_run.conf — retraining regardless of new data")
+        return True
     if not META_FILE.exists():
         log.warning("%s missing — proceeding to be safe", META_FILE)
         return True
@@ -240,7 +247,7 @@ with DAG(
     check_new_data = ShortCircuitOperator(
         task_id="check_new_data",
         python_callable=task_has_new_data,
-        doc_md="Skip retraining when fetch added no new crash rows.",
+        doc_md='Skip retraining when fetch added no new crash rows. Trigger with {"force": true} to override.',
     )
 
     clean = PythonOperator(
