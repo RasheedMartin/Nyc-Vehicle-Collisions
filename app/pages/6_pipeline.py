@@ -65,7 +65,7 @@ STAGES = [
     ("Fetch", "Incremental pull", "#6d28d9"),
     ("Clean", "Merge + engineer", "#6d28d9"),
     ("Features", "Encode + fit", "#6d28d9"),
-    ("Train", "XGBoost + SMOTE", "#6d28d9"),
+    ("Train", "XGBoost (calibrated)", "#6d28d9"),
     ("R2 Upload", "Cloudflare R2", "#7c3aed"),
     ("API Reload", "Hot-swap model", "#8b5cf6"),
     ("GitHub Actions", "workflow_dispatch", "#9333ea"),
@@ -139,11 +139,20 @@ with col_l:
     st.metric("Retrained", fmt_trained_at(train_meta["trained_at"]))
     st.metric("Training rows", f"{train_meta['n_train']:,}")
     st.metric("Test rows", f"{train_meta['n_test']:,}")
-    st.metric(
-        "CV F1 (macro)",
-        f"{train_meta['cv_f1_mean']:.3f} ± {train_meta['cv_f1_std']:.3f}",
-    )
-    st.metric("Test F1 (macro)", f"{train_meta['test_metrics']['f1']:.3f}")
+    tm = train_meta["test_metrics"]
+    if train_meta.get("model_version", 1) >= 2:
+        st.metric(
+            "CV severe-crash AUC",
+            f"{train_meta['cv_severe_auc_mean']:.3f} ± {train_meta['cv_severe_auc_std']:.3f}",
+        )
+        st.metric("Test severe-crash AUC", f"{tm['severe_auc']:.3f}")
+        st.metric("Top-10% risk lift", f"{tm['top_decile_lift']:.2f}×")
+    elif train_meta.get("cv_f1_mean") is not None:
+        st.metric(
+            "CV F1 (macro)",
+            f"{train_meta['cv_f1_mean']:.3f} ± {train_meta['cv_f1_std']:.3f}",
+        )
+        st.metric("Test F1 (macro)", f"{tm['f1']:.3f}")
 
 with col_r:
     st.markdown(
@@ -155,7 +164,7 @@ with col_r:
     )
 
     rows = [
-        ("Orchestration", "Apache Airflow (Docker)"),
+        ("Orchestration", "Apache Airflow (Railway)"),
         ("Schedule", "Every Monday, 6 am"),
         ("Artifact store", "Cloudflare R2"),
         ("Inference API", "FastAPI (Railway, private network)"),
@@ -163,7 +172,12 @@ with col_r:
         ("Hosting", "Railway"),
         ("Data source", "NYC Open Data (Socrata)"),
         ("Model", "XGBoost multiclass"),
-        ("Resampling", "SMOTE (train split only)"),
+        (
+            "Resampling",
+            "None — calibrated probabilities, early stopping"
+            if train_meta.get("model_version", 1) >= 2
+            else "SMOTE (train split only)",
+        ),
         ("Features", f"{train_meta['n_features']} encoded columns"),
     ]
     table_rows = "".join(

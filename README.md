@@ -55,8 +55,8 @@ NYC Open Data (Socrata)
         │          rush-hour/month/day_of_week (numeric)
         │          fit ColumnTransformer → preprocessor.joblib
         │
-  train.py   ──── XGBoost multiclass, SMOTE on train split only,
-        │          5-fold stratified CV → severity_model.joblib
+  train.py   ──── XGBoost multiclass, calibrated (no resampling),
+        │          early stopping, 5-fold CV → severity_model.joblib
         │
 Cloudflare R2 ── artifact store (parquet, joblib, json metadata)
         │                          │
@@ -72,7 +72,7 @@ Cloudflare R2 ── artifact store (parquet, joblib, json metadata)
 ```
 
 **Orchestration**: Apache Airflow (Docker, deployed on Railway) runs the full pipeline every Monday at 6am ET.  
-**Stack**: Python · Polars · XGBoost · scikit-learn · SMOTE · Streamlit · FastAPI · Plotly · boto3
+**Stack**: Python · Polars · XGBoost · scikit-learn · Streamlit · FastAPI · Plotly · boto3
 
 ---
 
@@ -137,7 +137,20 @@ Cloudflare R2 ── artifact store (parquet, joblib, json metadata)
 
 **Why no contributing factors or person details?** Those fields only exist after a crash occurs. The intended question is pre-crash: _given where and when, how bad do crashes tend to be here?_
 
-**Training**: Stratified 70/30 split → SMOTE on train only → 5-fold CV → XGBoost (`n_estimators=500`, `max_depth=6`, `learning_rate=0.05`). One row per crash (deduplicated from person-level raw data).
+**Training**: one row per crash (deduplicated from person-level raw data). The data is split 80/20 stratified *first*, so the test set keeps the real class mix. Training uses unweighted XGBoost (`multi:softprob`, `max_depth=6`, `learning_rate=0.05`) with early stopping on a validation split carved from train. There is no resampling, so the output probabilities are calibrated. 5-fold CV runs on the training split.
+
+**Evaluation**: macro-F1 is the wrong yardstick for a calibrated model on 71%/26%/3%/0.1% classes. `train_meta.json` reports:
+
+| Metric | Latest (Queens) | Meaning |
+| --- | --- | --- |
+| Severe-crash AUC | ~0.61 | ranks risky street/times above safe ones |
+| Top-10% risk lift | ~1.9× | severe-crash rate in the riskiest decile vs overall |
+| Calibration | predicted ≈ observed per class | "4% severe" really means ~4 in 100 |
+| Log-loss skill | ~+1% vs base rate | location + time carry little severity signal |
+
+The dashboard presents predictions as **relative risk vs the Queens average**, not as a single predicted label.
+
+> **Why not SMOTE?** An earlier version oversampled with SMOTE. That interpolated one-hot street columns into impossible synthetic crashes, inflated predicted fatal and major-injury probabilities 10–70×, and ran CV on resampled data, which overstated performance. The calibrated model ranks risk better (AUC 0.61 vs 0.54) and trains 4× faster.
 
 **Known limitations**: Fatal crashes are < 0.2% of Queens records. Location + time are strong signals for crash _frequency_ but weaker for crash _severity_ — the same corridor at the same hour can produce a fender-bender or a fatality depending on vehicle type, speed, and angle of impact. See the Severity Predictor page for full model caveats.
 
