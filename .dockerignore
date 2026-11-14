@@ -1,0 +1,15 @@
+# Keep build contexts small — large local data/model files are pulled from R2.
+.git
+.venv
+.idea
+.vscode
+**/__pycache__
+**/.ruff_cache
+**/.env
+data/
+models/
+log/
+src/data/
+NTA Boundaries/
+Visualizations/
+src/data-pipeline/old_notebooks/

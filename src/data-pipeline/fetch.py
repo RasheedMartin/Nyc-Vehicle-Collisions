@@ -49,7 +49,7 @@ import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 import polars as pl
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from typing import Tuple
 
@@ -591,7 +591,14 @@ def run_fetch(
         person = load_existing(r2, R2_PERSON_KEY, person_local)
 
     # ── Update metadata ───────────────────────────────────────────────────────
+    # crashes_rows_added drives the Airflow short-circuit gate: if the merged
+    # dataset didn't grow, there's nothing new to retrain on.
+    prev_crash_rows = int(meta.get("crashes_rows", 0) or 0)
+    meta["crashes_rows_added"] = (
+        max(len(crashes) - prev_crash_rows, 0) if not crashes.is_empty() else 0
+    )
     meta["last_successful_fetch"] = today
+    meta["last_fetch_date"] = datetime.now(timezone.utc).isoformat()
     meta["last_mode"] = mode
     meta["crashes_rows"] = (
         len(crashes) if not crashes.is_empty() else meta.get("crashes_rows", 0)

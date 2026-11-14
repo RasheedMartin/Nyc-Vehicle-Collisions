@@ -1,0 +1,23 @@
+# Pipeline (fetch → clean → features → train → upload) dependencies.
+# Installed into an isolated venv (/opt/nyc-venv) inside the Airflow image so
+# they never fight with Airflow's own constraint pins.
+#
+# scikit-learn / xgboost / joblib MUST match src/api/requirements.txt exactly —
+# the API unpickles what train.py pickles. Bump them together.
+scikit-learn==1.8.0
+xgboost==3.2.0
+joblib==1.5.3
+imbalanced-learn==0.14.1
+numpy==2.4.2
+pandas==2.3.3
+
+polars==1.38.1
+pyarrow==23.0.1
+geopandas==1.1.2
+shapely==2.1.2
+pyogrio==0.12.1
+
+boto3==1.42.63
+requests==2.32.5
+urllib3==2.6.3
+python-dotenv==1.2.2

@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/ruff-action@v3
+        with:
+          src: "dags src/data-pipeline/fetch.py src/data-pipeline/upload.py src/api app"
+
+  airflow-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Airflow image
+        run: docker build -f airflow/Dockerfile -t nyc-airflow .
+
+      - name: DAG integrity (no import errors, expected tasks)
+        run: |
+          docker run --rm --entrypoint python nyc-airflow -c "
+          from airflow.models import DagBag
+          bag = DagBag('/opt/airflow/dags', include_examples=False)
+          assert not bag.import_errors, bag.import_errors
+          dag = bag.dags['nyc_collisions_retrain']
+          expected = {'fetch','check_new_data','clean','features','train','upload_r2',
+                      'wait_for_api','reload_api','redeploy_railway','notify_success'}
+          assert set(dag.task_ids) == expected, dag.task_ids
+          print('DAG OK:', dag.task_ids)
+          "
+
+      - name: Pipeline venv imports
+        run: |
+          docker run --rm --entrypoint /opt/nyc-venv/bin/python nyc-airflow -c "
+          import polars, geopandas, sklearn, xgboost, imblearn, boto3, pyarrow
+          print('sklearn', sklearn.__version__, 'xgboost', xgboost.__version__)
+          "
+
+      - name: Model library pins match API
+        run: |
+          for pkg in scikit-learn xgboost joblib numpy pandas; do
+            a=$(grep -E "^$pkg==" airflow/requirements-pipeline.txt)
+            b=$(grep -E "^$pkg==" src/api/requirements.txt)
+            [ "$a" = "$b" ] || { echo "Pin mismatch: pipeline '$a' vs api '$b'"; exit 1; }
+          done
