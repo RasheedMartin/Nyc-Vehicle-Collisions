@@ -12,6 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/ruff-action@v3
         with:
+          version: "0.15.5"
           src: "dags src/data-pipeline/fetch.py src/data-pipeline/upload.py src/api app"
 
   airflow-image:
