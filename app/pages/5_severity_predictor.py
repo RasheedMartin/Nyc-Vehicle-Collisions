@@ -125,8 +125,12 @@ if api_meta is None:
 
 train_meta = {
     "test_metrics": api_meta["test_metrics"],
-    "cv_f1_mean": api_meta["cv_f1_mean"],
-    "cv_f1_std": api_meta["cv_f1_std"],
+    "cv_f1_mean": api_meta.get("cv_f1_mean"),
+    "cv_f1_std": api_meta.get("cv_f1_std"),
+    "cv_severe_auc_mean": api_meta.get("cv_severe_auc_mean"),
+    "cv_severe_auc_std": api_meta.get("cv_severe_auc_std"),
+    "base_rates": api_meta.get("base_rates") or {},
+    "model_version": api_meta.get("model_version", 1),
     "n_train": api_meta["n_train"],
     "n_test": api_meta["n_test"],
     "trained_at": api_meta["trained_at"],
@@ -138,64 +142,130 @@ severity_order = api_meta["severity_order"]
 
 # ── Model summary ─────────────────────────────────────────────────────────────
 
-with st.expander("Model Performance Summary"):
-    m = train_meta["test_metrics"]
-    mc1, mc2, mc3, mc4 = st.columns(4)
-    mc1.metric("Accuracy", f"{m['accuracy']:.1%}")
-    mc2.metric("Precision", f"{m['precision']:.1%}")
-    mc3.metric("Recall", f"{m['recall']:.1%}")
-    mc4.metric("F1 Score", f"{m['f1']:.1%}")
-    st.caption(
-        f"Trained on {train_meta['n_train']:,} rows · "
-        f"Tested on {train_meta['n_test']:,} rows · "
-        f"CV F1: {train_meta['cv_f1_mean']:.3f} ± {train_meta['cv_f1_std']:.3f} · "
-        f"Borough: {train_meta['borough']}"
-    )
+IS_V2 = train_meta["model_version"] >= 2
+m = train_meta["test_metrics"]
 
-cv_f1 = train_meta["cv_f1_mean"]
-test_f1 = train_meta["test_metrics"]["f1"]
-gap = cv_f1 - test_f1
+if IS_V2:
+    base = train_meta["base_rates"]
+    base_severe = base.get("Major Injury", 0) + base.get("Fatal", 0)
+    with st.expander("Model Performance Summary"):
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Severe-crash AUC", f"{m['severe_auc']:.3f}")
+        mc2.metric("Fatal AUC", f"{m['fatal_auc']:.3f}" if m.get("fatal_auc") else "—")
+        mc3.metric("Top-10% risk lift", f"{m['top_decile_lift']:.2f}×")
+        mc4.metric("Log-loss skill vs base rate", f"{m['log_loss_skill']:+.1%}")
+        st.caption(
+            f"Trained on {train_meta['n_train']:,} crashes · tested on {train_meta['n_test']:,} "
+            f"held-out crashes with the real class mix · CV severe AUC "
+            f"{train_meta['cv_severe_auc_mean']:.3f} ± {train_meta['cv_severe_auc_std']:.3f}"
+        )
+        cal = m.get("calibration", {})
+        if cal:
+            st.caption(
+                "Calibration (mean predicted vs observed): "
+                + " · ".join(
+                    f"{k} {v['predicted']:.2%} / {v['observed']:.2%}"
+                    for k, v in cal.items()
+                )
+            )
 
-st.markdown(
-    f"""
+    st.markdown(
+        f"""
 <div style="border-left:3px solid #7c3aed;padding:1.2rem 1.5rem;
             background:#0f0a1a;border-radius:0 6px 6px 0;margin:1rem 0;">
   <div style="font-family:'DM Mono',monospace;font-size:0.65rem;letter-spacing:0.15em;
               text-transform:uppercase;color:#7c3aed;margin-bottom:0.8rem;">
-    What the Numbers Tell Us
+    How to Read This Model
   </div>
   <div style="font-size:0.95rem;color:#e8e3f0;line-height:1.8;">
-  <strong style="color:#a855f7;">Class imbalance dominates the target.</strong>
-  Fatal crashes are rare — they represent less than 0.2% of Queens collisions.
-  No-Injury outcomes account for the vast majority of records even after deduplication
-  to crash level. A model that predicts "No Injury" every time achieves ~{m["accuracy"]:.0%} accuracy,
-  making raw accuracy a meaningless metric. SMOTE oversamples the minority classes during training,
-  but the test set is unbalanced real data — which is why test F1 ({test_f1:.2f}) is the number
-  that matters.
+  <strong style="color:#a855f7;">Probabilities are calibrated.</strong>
+  Across held-out crashes the model's average predicted probabilities match observed
+  rates: about {base.get("Major Injury", 0):.1%} of Queens crashes are major-injury and
+  {base.get("Fatal", 0):.2%} are fatal. A prediction of "4% severe" means roughly 4 in 100
+  crashes at that street and time are major-injury or fatal.
   <br/><br/>
-  <strong style="color:#a855f7;">Cross-validation overstates performance.</strong>
-  CV F1 is <strong>{cv_f1:.2f}</strong> but test F1 drops to <strong>{test_f1:.2f}</strong>
-  — a {gap:.2f}-point gap. SMOTE was applied inside the CV loop, so each fold was trained
-  and scored on synthetic minority samples. Real-world crash data is far noisier than
-  interpolated synthetic points.
+  <strong style="color:#a855f7;">Read it as relative risk, not a forecast.</strong>
+  Most crashes anywhere are no-injury, so the single most likely outcome is almost always
+  "No Injury". The useful signal is how a street and time compare with the Queens average.
+  The 10% of street/time combinations the model rates riskiest have
+  <strong>{m["top_decile_lift"]:.1f}×</strong> the borough's severe-crash rate
+  ({m["top_decile_severe_rate"]:.1%} vs {m["overall_severe_rate"]:.1%}).
   <br/><br/>
-  <strong style="color:#a855f7;">Location and time predict <em>where</em> crashes cluster — not <em>how bad</em> they are.</strong>
-  Street name and time of day are good signals for crash frequency and hotspot identification
-  (as the Hotspot Map shows). They are weaker predictors of severity because the same
-  corridor at the same hour can produce a fender-bender or a fatality depending on
-  variables not in the dataset: impact speed, vehicle type, and angle of collision.
+  <strong style="color:#a855f7;">Location and time are weak severity signals.</strong>
+  A severe-crash AUC of {m["severe_auc"]:.2f} means the model ranks risk better than chance but
+  far from perfectly. The same corridor at the same hour can produce a fender-bender or a
+  fatality depending on speed, vehicle type and angle of impact, and none of those are features here.
   <br/><br/>
   <strong style="color:#a855f7;">What would improve this model.</strong>
   NYC Open Data's companion
   <a href="https://data.cityofnewyork.us/Public-Safety/Motor-Vehicle-Collisions-Vehicles/bm4k-52h4"
      style="color:#a855f7;" target="_blank">Motor Vehicle Collisions – Vehicles</a>
-  table contains <strong>vehicle type</strong>, <strong>point of impact</strong>,
-  and <strong>pre-crash action</strong> — the strongest available proxies for severity.
+  table has <strong>vehicle type</strong>, <strong>point of impact</strong> and
+  <strong>pre-crash action</strong>, the strongest available proxies for severity.
   </div>
 </div>
 """,
-    unsafe_allow_html=True,
-)
+        unsafe_allow_html=True,
+    )
+
+if not IS_V2:
+    with st.expander("Model Performance Summary"):
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Accuracy", f"{m['accuracy']:.1%}")
+        mc2.metric("Precision", f"{m['precision']:.1%}")
+        mc3.metric("Recall", f"{m['recall']:.1%}")
+        mc4.metric("F1 Score", f"{m['f1']:.1%}")
+        st.caption(
+            f"Trained on {train_meta['n_train']:,} rows · "
+            f"Tested on {train_meta['n_test']:,} rows · "
+            f"CV F1: {train_meta['cv_f1_mean']:.3f} ± {train_meta['cv_f1_std']:.3f} · "
+            f"Borough: {train_meta['borough']}"
+        )
+
+    cv_f1 = train_meta["cv_f1_mean"]
+    test_f1 = train_meta["test_metrics"]["f1"]
+    gap = cv_f1 - test_f1
+
+    st.markdown(
+        f"""
+    <div style="border-left:3px solid #7c3aed;padding:1.2rem 1.5rem;
+                background:#0f0a1a;border-radius:0 6px 6px 0;margin:1rem 0;">
+      <div style="font-family:'DM Mono',monospace;font-size:0.65rem;letter-spacing:0.15em;
+                  text-transform:uppercase;color:#7c3aed;margin-bottom:0.8rem;">
+        What the Numbers Tell Us
+      </div>
+      <div style="font-size:0.95rem;color:#e8e3f0;line-height:1.8;">
+      <strong style="color:#a855f7;">Class imbalance dominates the target.</strong>
+      Fatal crashes are rare — they represent less than 0.2% of Queens collisions.
+      No-Injury outcomes account for the vast majority of records even after deduplication
+      to crash level. A model that predicts "No Injury" every time achieves ~{m["accuracy"]:.0%} accuracy,
+      making raw accuracy a meaningless metric. SMOTE oversamples the minority classes during training,
+      but the test set is unbalanced real data — which is why test F1 ({test_f1:.2f}) is the number
+      that matters.
+      <br/><br/>
+      <strong style="color:#a855f7;">Cross-validation overstates performance.</strong>
+      CV F1 is <strong>{cv_f1:.2f}</strong> but test F1 drops to <strong>{test_f1:.2f}</strong>
+      — a {gap:.2f}-point gap. SMOTE was applied inside the CV loop, so each fold was trained
+      and scored on synthetic minority samples. Real-world crash data is far noisier than
+      interpolated synthetic points.
+      <br/><br/>
+      <strong style="color:#a855f7;">Location and time predict <em>where</em> crashes cluster — not <em>how bad</em> they are.</strong>
+      Street name and time of day are good signals for crash frequency and hotspot identification
+      (as the Hotspot Map shows). They are weaker predictors of severity because the same
+      corridor at the same hour can produce a fender-bender or a fatality depending on
+      variables not in the dataset: impact speed, vehicle type, and angle of collision.
+      <br/><br/>
+      <strong style="color:#a855f7;">What would improve this model.</strong>
+      NYC Open Data's companion
+      <a href="https://data.cityofnewyork.us/Public-Safety/Motor-Vehicle-Collisions-Vehicles/bm4k-52h4"
+         style="color:#a855f7;" target="_blank">Motor Vehicle Collisions – Vehicles</a>
+      table contains <strong>vehicle type</strong>, <strong>point of impact</strong>,
+      and <strong>pre-crash action</strong> — the strongest available proxies for severity.
+      </div>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
 
 st.divider()
 st.subheader("Try It Yourself")
@@ -247,27 +317,57 @@ if st.button("Predict Severity →"):
             "Fatal": "#1a0808",
         }
 
-        st.markdown(
-            f"""
-        <div style="margin:1rem 0 1.5rem 0;padding:2rem;background:{tint.get(predicted_label, "#13131f")};
-                    border:1px solid {predicted_color};border-radius:6px;
-                    border-left:4px solid {predicted_color};">
+        rr = result.get("severe_relative_risk")
+        if rr is not None:
+            sp = result["severe_probability"]
+            if rr >= 1.25:
+                rr_color, rr_word = "#ef4444", "above"
+            elif rr <= 0.8:
+                rr_color, rr_word = "#4ade80", "below"
+            else:
+                rr_color, rr_word = "#facc15", "close to"
+            st.markdown(
+                f"""
+        <div style="margin:1rem 0 1.5rem 0;padding:2rem;background:#13131f;
+                    border:1px solid {rr_color};border-left:4px solid {rr_color};border-radius:6px;">
           <div style="font-family:'DM Mono',monospace;font-size:0.65rem;letter-spacing:0.15em;
-                      text-transform:uppercase;color:{predicted_color};margin-bottom:0.4rem;">
-            Predicted Outcome
+                      text-transform:uppercase;color:{rr_color};margin-bottom:0.4rem;">
+            Severe-crash risk (major injury or fatal)
           </div>
           <div style="font-family:'Bebas Neue',sans-serif;font-size:3.2rem;
-                      color:{predicted_color};line-height:1;letter-spacing:0.03em;">
-            {predicted_label}
+                      color:{rr_color};line-height:1;letter-spacing:0.03em;">
+            {rr:.2f}× Queens average
           </div>
-          <div style="font-family:'DM Mono',monospace;font-size:0.8rem;
-                      color:#6b6880;margin-top:0.5rem;">
-            Confidence: {confidence:.1%}
+          <div style="font-family:'DM Mono',monospace;font-size:0.8rem;color:#6b6880;margin-top:0.5rem;">
+            {sp:.1%} of crashes here are expected to be severe, vs {base_severe:.1%} borough-wide
+            · {rr_word} average
           </div>
         </div>
         """,
-            unsafe_allow_html=True,
-        )
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                f"""
+            <div style="margin:1rem 0 1.5rem 0;padding:2rem;background:{tint.get(predicted_label, "#13131f")};
+                        border:1px solid {predicted_color};border-radius:6px;
+                        border-left:4px solid {predicted_color};">
+              <div style="font-family:'DM Mono',monospace;font-size:0.65rem;letter-spacing:0.15em;
+                          text-transform:uppercase;color:{predicted_color};margin-bottom:0.4rem;">
+                Predicted Outcome
+              </div>
+              <div style="font-family:'Bebas Neue',sans-serif;font-size:3.2rem;
+                          color:{predicted_color};line-height:1;letter-spacing:0.03em;">
+                {predicted_label}
+              </div>
+              <div style="font-family:'DM Mono',monospace;font-size:0.8rem;
+                          color:#6b6880;margin-top:0.5rem;">
+                Confidence: {confidence:.1%}
+              </div>
+            </div>
+            """,
+                unsafe_allow_html=True,
+            )
 
         st.subheader("Probability by Severity Class")
         fig_p = go.Figure(
@@ -281,6 +381,22 @@ if st.button("Predict Severity →"):
                 hovertemplate="<b>%{x}</b><br>%{y:.1f}%<extra></extra>",
             )
         )
+        if train_meta["base_rates"]:
+            fig_p.add_trace(
+                go.Scatter(
+                    x=labels,
+                    y=[train_meta["base_rates"].get(lb, 0) * 100 for lb in labels],
+                    mode="markers",
+                    marker=dict(
+                        symbol="line-ew-open", size=40, color=TEXT, line=dict(width=2)
+                    ),
+                    name="Queens average",
+                    hovertemplate="<b>%{x}</b><br>Queens average %{y:.2f}%<extra></extra>",
+                )
+            )
+            fig_p.update_layout(
+                showlegend=True, legend=dict(orientation="h", y=1.12, x=0)
+            )
         fig_p.update_layout(
             LAYOUT,
             height=280,
@@ -320,6 +436,6 @@ if st.button("Predict Severity →"):
 
         st.caption(
             "MODEL DISCLAIMER · Predictions are probabilistic estimates based on historical Queens "
-            "collision patterns. Fatal class performance is limited by low sample count (~48 training cases). "
+            "collision patterns. Fatal crashes are ~0.1% of the data, so fatal estimates are the least certain. "
             "Intended for policy analysis, not individual risk assessment."
         )

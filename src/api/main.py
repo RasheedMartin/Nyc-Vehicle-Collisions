@@ -211,6 +211,9 @@ class PredictResponse(BaseModel):
     predicted_label: str
     confidence: float
     probabilities: list[SeverityProbability]
+    # P(Major Injury) + P(Fatal), and how that compares with the borough-wide rate
+    severe_probability: float | None = None
+    severe_relative_risk: float | None = None
     borough: str = "QUEENS"
 
 
@@ -220,8 +223,14 @@ class MetaResponse(BaseModel):
     feature_importances: dict
     xgboost_params: dict
     test_metrics: dict
-    cv_f1_mean: float
-    cv_f1_std: float
+    # v1 (SMOTE) models report CV macro-F1; v2 (calibrated) models report CV severe AUC
+    cv_f1_mean: float | None = None
+    cv_f1_std: float | None = None
+    cv_severe_auc_mean: float | None = None
+    cv_severe_auc_std: float | None = None
+    base_rates: dict = {}
+    approach: str = "SMOTE"
+    model_version: int = 1
     n_train: int
     n_test: int
     trained_at: str
@@ -251,8 +260,13 @@ def meta() -> MetaResponse:
         category_catalogue=state.feature_meta["category_catalogue"],
         feature_importances=state.train_meta["feature_importances"],
         test_metrics=state.train_meta["test_metrics"],
-        cv_f1_mean=state.train_meta["cv_f1_mean"],
-        cv_f1_std=state.train_meta["cv_f1_std"],
+        cv_f1_mean=state.train_meta.get("cv_f1_mean"),
+        cv_f1_std=state.train_meta.get("cv_f1_std"),
+        cv_severe_auc_mean=state.train_meta.get("cv_severe_auc_mean"),
+        cv_severe_auc_std=state.train_meta.get("cv_severe_auc_std"),
+        base_rates=state.train_meta.get("base_rates", {}),
+        approach=state.train_meta.get("approach", "SMOTE"),
+        model_version=state.train_meta.get("model_version", 1),
         n_train=state.train_meta["n_train"],
         n_test=state.train_meta["n_test"],
         trained_at=state.train_meta["trained_at"],
@@ -292,6 +306,12 @@ def predict(req: PredictRequest) -> PredictResponse:
     predicted_idx = int(np.argmax(proba))
     predicted_label = severity_order[predicted_idx]
 
+    by_label = dict(zip(severity_order, proba))
+    severe_p = float(by_label.get("Major Injury", 0) + by_label.get("Fatal", 0))
+    base = state.train_meta.get("base_rates", {})
+    base_severe = base.get("Major Injury", 0) + base.get("Fatal", 0)
+    rel_risk = round(severe_p / base_severe, 3) if base_severe else None
+
     return PredictResponse(
         predicted_label=predicted_label,
         confidence=round(float(proba[predicted_idx]), 4),
@@ -299,6 +319,8 @@ def predict(req: PredictRequest) -> PredictResponse:
             SeverityProbability(label=label, probability=round(float(p), 4))
             for label, p in zip(severity_order, proba)
         ],
+        severe_probability=round(severe_p, 5),
+        severe_relative_risk=rel_risk,
     )
 
 

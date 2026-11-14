@@ -189,8 +189,13 @@ def load_train_meta() -> dict:
         # Return in the shape the pipeline page expects
         return {
             "test_metrics": data["test_metrics"],
-            "cv_f1_mean": data["cv_f1_mean"],
-            "cv_f1_std": data["cv_f1_std"],
+            "cv_f1_mean": data.get("cv_f1_mean"),
+            "cv_f1_std": data.get("cv_f1_std"),
+            "cv_severe_auc_mean": data.get("cv_severe_auc_mean"),
+            "cv_severe_auc_std": data.get("cv_severe_auc_std"),
+            "base_rates": data.get("base_rates", {}),
+            "approach": data.get("approach", "SMOTE"),
+            "model_version": data.get("model_version", 1),
             "n_train": data["n_train"],
             "n_test": data["n_test"],
             "trained_at": data["trained_at"],

@@ -39,7 +39,7 @@ jobs:
       - name: Pipeline venv imports
         run: |
           docker run --rm --entrypoint /opt/nyc-venv/bin/python nyc-airflow -c "
-          import polars, geopandas, sklearn, xgboost, imblearn, boto3, pyarrow
+          import polars, geopandas, sklearn, xgboost, boto3, pyarrow
           print('sklearn', sklearn.__version__, 'xgboost', xgboost.__version__)
           "
 
